@@ -105,7 +105,7 @@ class ApiIntegrationTest {
 
     @Test
     void correctAnswerRevealsSolutionAndMarksSolved() throws Exception {
-        attempt("java-int-overflow", "-2147483648   2147483648\\n")
+        attempt("java-int-overflow", "-2147483648 2147483648\\n")
                 .andExpect(jsonPath("$.correct", is(true)))
                 .andExpect(jsonPath("$.solution.explanation", notNullValue()));
         mvc.perform(get("/api/exercises/java-int-overflow").header("X-User-Id", user))

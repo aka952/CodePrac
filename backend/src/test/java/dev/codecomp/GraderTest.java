@@ -15,6 +15,8 @@ class GraderTest {
         assertThat(Grader.isCorrect(PREDICT_OUTPUT, "a\nb", "a  \r\nb\n\n")).isTrue();
         assertThat(Grader.isCorrect(PREDICT_OUTPUT, "a\nb", "a b")).isFalse();
         assertThat(Grader.isCorrect(PREDICT_OUTPUT, "true\nfalse", "true\ntrue")).isFalse();
+        // spacing inside a line is part of the output, so formatting exercises can be graded
+        assertThat(Grader.isCorrect(PREDICT_OUTPUT, "-1 2", "-1   2")).isFalse();
     }
 
     @Test
