@@ -8,5 +8,6 @@ public record RunResult(RunStatus status, String stdout, String stderr, int exit
         return new RunResult(RunStatus.SANDBOX_ERROR, "", message, -1, durationMs, false);
     }
 
-    public boolean cacheable() { return status != RunStatus.SANDBOX_ERROR; }
+    /** Timeouts are not cached: they can be caused by the environment (e.g. an image pull on first run), not the code. */
+    public boolean cacheable() { return status != RunStatus.SANDBOX_ERROR && status != RunStatus.TIMEOUT; }
 }
