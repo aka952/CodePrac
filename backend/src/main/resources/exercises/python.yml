@@ -1,0 +1,302 @@
+- slug: py-slicing
+  title: Slicing strings
+  language: python
+  type: predict_output
+  difficulty: easy
+  tags: [strings, slicing]
+  question: What does this program print?
+  code: |
+    s = "comprehension"
+    print(s[::-1][:4])
+    print(s[-4:])
+    print(s[2:8:2])
+  answer: |
+    nois
+    sion
+    mrh
+  explanation: >
+    s[::-1] reverses the string ("noisneherpmoc") and [:4] takes the first 4 characters of that.
+    s[-4:] is the last 4 characters. s[2:8:2] takes indexes 2, 4, 6 -> m, r, h (8 is excluded).
+
+- slug: py-floor-division
+  title: Negative division
+  language: python
+  type: predict_output
+  difficulty: easy
+  tags: [numbers, operators]
+  question: What does this program print?
+  code: |
+    print(7 // 2, -7 // 2)
+    print(7 % 3, -7 % 3)
+    print(int(-7 / 2))
+  answer: |
+    3 -4
+    1 2
+    -3
+  explanation: >
+    // is FLOOR division: it rounds toward negative infinity, so -3.5 becomes -4 (Java would give -3).
+    % follows the same rule, so the result takes the sign of the divisor: -7 = 3 * -3 + 2.
+    int() truncates toward zero, so int(-3.5) is -3.
+
+- slug: py-enumerate-trace
+  title: Skipping vowels
+  language: python
+  type: trace
+  difficulty: easy
+  tags: [loops, strings, tracing]
+  question: What is the final value of `total`?
+  code: |
+    total = 0
+    for i, ch in enumerate("abcde"):
+        if ch in "aeiou":
+            continue
+        total += i
+    print(total)
+  answer: "6"
+  explanation: >
+    enumerate yields (index, char) pairs. Vowels a (0) and e (4) are skipped.
+    The consonants are b, c, d at indexes 1, 2, 3, so total = 1 + 2 + 3 = 6.
+
+- slug: py-slice-off-by-one
+  title: Last n items
+  language: python
+  type: spot_bug
+  difficulty: easy
+  tags: [slicing, bugs]
+  question: last_n([1, 2, 3, 4, 5], 2) should return [4, 5] but returns [3, 4, 5]. Click the buggy line.
+  code: |
+    def last_n(items, n):
+        return items[len(items) - n - 1:]
+
+    print(last_n([1, 2, 3, 4, 5], 2))
+  answer: "2"
+  explanation: >
+    The slice start should be len(items) - n (index 3 here). The extra - 1 starts one element early.
+    Idiomatic fix: items[-n:] (careful: that returns everything when n == 0).
+
+- slug: py-mutable-default
+  title: Default list argument
+  language: python
+  type: predict_output
+  difficulty: medium
+  tags: [functions, mutability]
+  question: What does this program print?
+  code: |
+    def add_item(item, bucket=[]):
+        bucket.append(item)
+        return bucket
+
+    print(add_item("a"))
+    print(add_item("b"))
+    print(add_item("c", []))
+    print(add_item("d"))
+  answer: |
+    ['a']
+    ['a', 'b']
+    ['c']
+    ['a', 'b', 'd']
+  explanation: >
+    Default values are evaluated ONCE, when the def statement runs, not on every call.
+    Every call that omits bucket shares the same list object, so it keeps growing.
+    The call with an explicit [] gets its own list. Fix: bucket=None, then if bucket is None: bucket = [].
+
+- slug: py-list-aliasing
+  title: Building a grid
+  language: python
+  type: predict_output
+  difficulty: medium
+  tags: [lists, references]
+  question: What does this program print?
+  code: |
+    grid = [[0] * 3] * 3
+    grid[0][0] = 1
+    print(grid)
+
+    grid = [[0] * 3 for _ in range(3)]
+    grid[0][0] = 1
+    print(grid)
+  answer: |
+    [[1, 0, 0], [1, 0, 0], [1, 0, 0]]
+    [[1, 0, 0], [0, 0, 0], [0, 0, 0]]
+  explanation: >
+    [row] * 3 copies the REFERENCE three times: all three rows are the same list object, so one change
+    shows up in every row. The list comprehension creates a new inner list on each iteration.
+
+- slug: py-generator-exhaustion
+  title: Reusing a generator
+  language: python
+  type: predict_output
+  difficulty: medium
+  tags: [generators, iteration]
+  question: What does this program print?
+  code: |
+    squares = (n * n for n in range(4))
+    print(sum(squares))
+    print(sum(squares))
+    print(list(squares))
+  answer: |
+    14
+    0
+    []
+  explanation: >
+    A generator produces each value once and is then exhausted. The first sum consumes 0+1+4+9 = 14.
+    After that it yields nothing, so the sum of nothing is 0 and the list is empty.
+    Use a list (square brackets) if you need to iterate more than once.
+
+- slug: py-for-else
+  title: for ... else
+  language: python
+  type: predict_output
+  difficulty: medium
+  tags: [loops, control-flow]
+  question: What does this program print?
+  code: |
+    for n in [3, 5, 7]:
+        if n % 2 == 0:
+            print("found even", n)
+            break
+    else:
+        print("no even numbers")
+
+    for n in [3, 4, 7]:
+        if n % 2 == 0:
+            print("found even", n)
+            break
+    else:
+        print("no even numbers")
+  answer: |
+    no even numbers
+    found even 4
+  explanation: >
+    A loop's else block runs only if the loop finished WITHOUT hitting break.
+    Read it as "if no break". The first loop never breaks; the second breaks at 4, skipping the else.
+
+- slug: py-chained-comparison
+  title: Chained comparisons
+  language: python
+  type: predict_output
+  difficulty: medium
+  tags: [operators, booleans]
+  question: What does this program print?
+  code: |
+    print(1 < 3 < 2)
+    print((1 < 3) < 2)
+    print(True + True, True * 10)
+  answer: |
+    False
+    True
+    2 10
+  explanation: >
+    1 < 3 < 2 means (1 < 3) and (3 < 2), which is False.
+    With parentheses, (1 < 3) is True, and True behaves like 1 in arithmetic, so 1 < 2 is True.
+    bool is a subclass of int, so True + True is 2.
+
+- slug: py-shallow-copy
+  title: copy() vs deepcopy()
+  language: python
+  type: predict_output
+  difficulty: medium
+  tags: [dicts, references, copying]
+  question: What does this program print?
+  code: |
+    import copy
+
+    original = {"name": "Ada", "skills": ["java"]}
+    shallow = original.copy()
+    deep = copy.deepcopy(original)
+
+    shallow["name"] = "A"
+    shallow["skills"].append("kafka")
+    deep["skills"].append("k8s")
+
+    print(original)
+  answer: |
+    {'name': 'Ada', 'skills': ['java', 'kafka']}
+  explanation: >
+    A shallow copy is a new dict whose values are the SAME objects. Rebinding shallow["name"] only affects
+    the copy, but appending to the shared list mutates the list both dicts point to.
+    deepcopy also copies nested objects, so its change stays private.
+
+- slug: py-unbound-local
+  title: Incrementing a counter
+  language: python
+  type: spot_bug
+  difficulty: medium
+  tags: [scope, functions, bugs]
+  question: This program raises UnboundLocalError. Click the line that causes it.
+  code: |
+    count = 0
+
+    def increment():
+        count += 1
+        return count
+
+    print(increment())
+  answer: "4"
+  explanation: >
+    Assigning to a name anywhere in a function makes it LOCAL for the whole function body.
+    count += 1 reads the local count before it has a value. Declare global count (or better, avoid
+    module-level mutable state and pass/return the value).
+
+- slug: py-dict-trace
+  title: setdefault and sorting
+  language: python
+  type: trace
+  difficulty: medium
+  tags: [dicts, sorting, tracing]
+  question: What is the value of `result`?
+  code: |
+    inventory = {"apple": 3, "pear": 1}
+    inventory.setdefault("apple", 10)
+    inventory.setdefault("plum", 5)
+    inventory["pear"] += inventory.get("kiwi", 2)
+    result = sorted(inventory.items(), key=lambda kv: kv[1])
+    print(result)
+  answer: "[('apple', 3), ('pear', 3), ('plum', 5)]"
+  explanation: >
+    setdefault only inserts when the key is missing, so apple stays 3 and plum becomes 5.
+    pear becomes 1 + 2 (kiwi is missing, so get returns the default 2).
+    sorted is stable: apple and pear tie at 3 and keep their insertion order.
+
+- slug: py-late-binding-closures
+  title: Lambdas in a loop
+  language: python
+  type: predict_output
+  difficulty: hard
+  tags: [closures, scope]
+  question: What does this program print?
+  code: |
+    funcs = [lambda: i for i in range(3)]
+    print([f() for f in funcs])
+
+    funcs = [lambda i=i: i for i in range(3)]
+    print([f() for f in funcs])
+  answer: |
+    [2, 2, 2]
+    [0, 1, 2]
+  explanation: >
+    Closures capture VARIABLES, not values. All three lambdas look up the same i when called,
+    and by then the loop has finished with i = 2.
+    A default argument (i=i) is evaluated at definition time, freezing each value.
+
+- slug: py-mutate-while-iterating
+  title: Removing while looping
+  language: python
+  type: predict_output
+  difficulty: hard
+  tags: [lists, iteration]
+  question: What does this program print?
+  code: |
+    def remove_negatives(nums):
+        for n in nums:
+            if n < 0:
+                nums.remove(n)
+        return nums
+
+    print(remove_negatives([1, -2, -3, 4, -5]))
+  answer: |
+    [1, -3, 4]
+  explanation: >
+    The for loop walks the list by index. Removing -2 (index 1) shifts -3 into index 1, but the loop moves
+    on to index 2 (now 4), so -3 is skipped. -5 is then removed normally.
+    Iterate over a copy (for n in nums[:]) or build a new list: [n for n in nums if n >= 0].

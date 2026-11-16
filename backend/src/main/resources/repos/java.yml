@@ -1,0 +1,809 @@
+- slug: java-checkout-service
+  title: Checkout service
+  language: java
+  difficulty: medium
+  tags: [collections, validation, integer-math, data-integrity]
+  description: |
+    A tiny checkout module for a web shop. It was written in a hurry and merged without review.
+
+    Intended behaviour:
+    - Cart.add(sku, qty) adds qty to whatever is already in the cart. qty must be positive (IllegalArgumentException otherwise).
+    - CheckoutService.checkout(cart, coupon) returns the total in cents, takes 10% off for coupon SAVE10, and removes the items from stock.
+    - Checkout fails with IllegalArgumentException for an unknown SKU and IllegalStateException when any item has too little stock.
+      A failed checkout must not change any stock.
+
+    Hidden tests call the public constructors and methods (Product, Inventory.add/find, Cart.add, CheckoutService.checkout), so keep those signatures.
+  files:
+    - path: src/main/java/com/shop/Product.java
+      content: |
+        package com.shop;
+
+        public class Product {
+            public String sku;
+            public String name;
+            public long priceCents;
+            public int stock;
+
+            public Product(String sku, String name, long priceCents, int stock) {
+                this.sku = sku;
+                this.name = name;
+                this.priceCents = priceCents;
+                this.stock = stock;
+            }
+        }
+    - path: src/main/java/com/shop/Inventory.java
+      content: |
+        package com.shop;
+
+        import java.util.ArrayList;
+        import java.util.List;
+
+        public class Inventory {
+            private List<Product> products = new ArrayList<>();
+
+            public void add(Product p) {
+                products.add(p);
+            }
+
+            public Product find(String sku) {
+                for (Product p : products) {
+                    if (p.sku == sku) {
+                        return p;
+                    }
+                }
+                return null;
+            }
+        }
+    - path: src/main/java/com/shop/Cart.java
+      content: |
+        package com.shop;
+
+        import java.util.HashMap;
+        import java.util.Map;
+
+        public class Cart {
+            public Map<String, Integer> items = new HashMap<>();
+
+            public void add(String sku, int qty) {
+                items.put(sku, qty);
+            }
+        }
+    - path: src/main/java/com/shop/CheckoutService.java
+      content: |
+        package com.shop;
+
+        public class CheckoutService {
+            private Inventory inventory;
+
+            public CheckoutService(Inventory inventory) {
+                this.inventory = inventory;
+            }
+
+            /** Returns the total in cents after any coupon, and takes the items out of stock. */
+            public long checkout(Cart cart, String coupon) {
+                long total = 0;
+                for (String sku : cart.items.keySet()) {
+                    int qty = cart.items.get(sku);
+                    Product p = inventory.find(sku);
+                    p.stock = p.stock - qty;
+                    total += p.priceCents * qty;
+                }
+                if (coupon != null && coupon.equals("SAVE10")) {
+                    total = total - total * (10 / 100);
+                }
+                return total;
+            }
+        }
+  issues:
+    - id: 1
+      file: src/main/java/com/shop/Inventory.java
+      line: 15
+      category: bug
+      title: SKUs compared with ==
+      detail: >
+        == compares object identity, not string contents. It only works when both strings happen to be the same
+        interned literal; a SKU read from a request or built at runtime will never match. Use sku.equals(p.sku),
+        or better, store products in a Map<String, Product> keyed by SKU, which also removes the linear scan.
+    - id: 2
+      file: src/main/java/com/shop/Cart.java
+      line: 10
+      category: bug
+      title: add() overwrites the quantity instead of adding to it
+      detail: >
+        items.put replaces the previous quantity, so adding 2 then 3 of the same SKU leaves 3 in the cart.
+        Use items.merge(sku, qty, Integer::sum).
+    - id: 3
+      file: src/main/java/com/shop/Cart.java
+      line: 9
+      category: validation
+      title: Quantity is not validated
+      detail: >
+        Zero or negative quantities are accepted, which can produce negative totals and increase stock at checkout.
+        Reject qty <= 0 with an IllegalArgumentException.
+    - id: 4
+      file: src/main/java/com/shop/CheckoutService.java
+      line: 20
+      category: bug
+      title: Coupon discount is always zero
+      detail: >
+        10 / 100 is integer division and evaluates to 0, so SAVE10 never discounts anything.
+        Compute total * 10 / 100 (multiply first) or total - total / 10, and decide on rounding explicitly.
+    - id: 5
+      file: src/main/java/com/shop/CheckoutService.java
+      line: 16
+      category: data-integrity
+      title: Stock is never checked and is reduced item by item
+      detail: >
+        Stock is decremented without checking availability, so it can go negative. Because it is decremented
+        inside the loop, a failure on a later item would leave earlier items already taken out of stock.
+        Validate every line first (existence and stock), and only then apply all the decrements.
+    - id: 6
+      file: src/main/java/com/shop/CheckoutService.java
+      line: 15
+      category: error-handling
+      title: Unknown SKU crashes with NullPointerException
+      detail: >
+        find() returns null for an unknown SKU and the next line dereferences it. Check for null (or return Optional)
+        and throw an IllegalArgumentException that names the SKU.
+    - id: 7
+      file: src/main/java/com/shop/Cart.java
+      line: 7
+      category: design
+      title: Mutable state exposed through public fields
+      detail: >
+        Cart.items and all of Product's fields are public and mutable, so any caller can bypass validation
+        (put a negative quantity straight into the map, or set stock directly). Make the fields private and expose
+        read-only views or intention-revealing methods instead.
+  tests:
+    - path: RepoTests.java
+      content: |
+        import com.shop.*;
+
+        public class RepoTests {
+            interface Body { void run() throws Exception; }
+
+            static int failed = 0;
+
+            public static void main(String[] args) {
+                test("find() matches an equal SKU string, not just the same object", () -> {
+                    Inventory inv = new Inventory();
+                    inv.add(new Product("A1", "Mug", 250, 10));
+                    check(inv.find(new String("A1")) != null, "find(new String(\"A1\")) returned null");
+                });
+                test("Checkout sums price times quantity", () -> {
+                    Cart cart = new Cart();
+                    cart.add("A1", 2);
+                    cart.add("B2", 1);
+                    long total = new CheckoutService(inventory()).checkout(cart, null);
+                    check(total == 1500, "expected 1500 but got " + total);
+                });
+                test("Adding the same SKU twice accumulates the quantity", () -> {
+                    Cart cart = new Cart();
+                    cart.add("A1", 2);
+                    cart.add("A1", 3);
+                    long total = new CheckoutService(inventory()).checkout(cart, null);
+                    check(total == 1250, "expected 5 x 250 = 1250 but got " + total);
+                });
+                test("Cart rejects zero or negative quantities", () -> {
+                    expectThrows(IllegalArgumentException.class, () -> new Cart().add("A1", 0), "add(\"A1\", 0)");
+                    expectThrows(IllegalArgumentException.class, () -> new Cart().add("A1", -3), "add(\"A1\", -3)");
+                });
+                test("SAVE10 takes 10% off", () -> {
+                    Cart cart = new Cart();
+                    cart.add("B2", 1);
+                    long total = new CheckoutService(inventory()).checkout(cart, "SAVE10");
+                    check(total == 900, "expected 900 but got " + total);
+                });
+                test("Checkout fails when stock runs out", () -> {
+                    Inventory inv = new Inventory();
+                    inv.add(new Product("A1", "Mug", 250, 1));
+                    Cart cart = new Cart();
+                    cart.add("A1", 2);
+                    expectThrows(IllegalStateException.class, () -> new CheckoutService(inv).checkout(cart, null), "buying 2 with 1 in stock");
+                });
+                test("A failed checkout leaves all stock untouched", () -> {
+                    Inventory inv = new Inventory();
+                    inv.add(new Product("A1", "Mug", 250, 5));
+                    inv.add(new Product("B2", "Pen", 100, 1));
+                    CheckoutService svc = new CheckoutService(inv);
+                    Cart cart = new Cart();
+                    cart.add("A1", 5);
+                    cart.add("B2", 2);
+                    expectThrows(IllegalStateException.class, () -> svc.checkout(cart, null), "buying 2 B2 with 1 in stock");
+                    Cart again = new Cart();
+                    again.add("A1", 5);
+                    check(svc.checkout(again, null) == 1250, "A1 stock was changed by the failed checkout");
+                });
+                test("Unknown SKU is rejected with IllegalArgumentException", () -> {
+                    Cart cart = new Cart();
+                    cart.add("NOPE", 1);
+                    expectThrows(IllegalArgumentException.class, () -> new CheckoutService(inventory()).checkout(cart, null), "checkout of an unknown SKU");
+                });
+                System.exit(failed == 0 ? 0 : 1);
+            }
+
+            static Inventory inventory() {
+                Inventory inv = new Inventory();
+                inv.add(new Product("A1", "Mug", 250, 10));
+                inv.add(new Product("B2", "Lamp", 1000, 10));
+                return inv;
+            }
+
+            static void test(String name, Body body) {
+                try {
+                    body.run();
+                    System.out.println("PASS " + name);
+                } catch (Throwable t) {
+                    failed++;
+                    String why = t instanceof AssertionError && t.getMessage() != null ? t.getMessage() : t.toString();
+                    System.out.println("FAIL " + name + ": " + why.replace('\n', ' '));
+                }
+            }
+
+            static void check(boolean ok, String message) {
+                if (!ok) throw new AssertionError(message);
+            }
+
+            static void expectThrows(Class<? extends Throwable> type, Body body, String what) {
+                try {
+                    body.run();
+                } catch (Throwable t) {
+                    if (type.isInstance(t)) return;
+                    throw new AssertionError(what + " should throw " + type.getSimpleName() + " but threw " + t);
+                }
+                throw new AssertionError(what + " should throw " + type.getSimpleName() + " but threw nothing");
+            }
+        }
+  solution:
+    - path: src/main/java/com/shop/Inventory.java
+      content: |
+        package com.shop;
+
+        import java.util.HashMap;
+        import java.util.Map;
+
+        public class Inventory {
+            private final Map<String, Product> products = new HashMap<>();
+
+            public void add(Product p) {
+                products.put(p.sku, p);
+            }
+
+            public Product find(String sku) {
+                return products.get(sku);
+            }
+        }
+    - path: src/main/java/com/shop/Cart.java
+      content: |
+        package com.shop;
+
+        import java.util.Collections;
+        import java.util.LinkedHashMap;
+        import java.util.Map;
+
+        public class Cart {
+            private final Map<String, Integer> items = new LinkedHashMap<>();
+
+            public void add(String sku, int qty) {
+                if (qty <= 0) throw new IllegalArgumentException("Quantity must be positive: " + qty);
+                items.merge(sku, qty, Integer::sum);
+            }
+
+            public Map<String, Integer> items() {
+                return Collections.unmodifiableMap(items);
+            }
+        }
+    - path: src/main/java/com/shop/CheckoutService.java
+      content: |
+        package com.shop;
+
+        import java.util.LinkedHashMap;
+        import java.util.Map;
+
+        public class CheckoutService {
+            private final Inventory inventory;
+
+            public CheckoutService(Inventory inventory) {
+                this.inventory = inventory;
+            }
+
+            /** Returns the total in cents after any coupon, and takes the items out of stock. */
+            public long checkout(Cart cart, String coupon) {
+                Map<Product, Integer> lines = new LinkedHashMap<>();
+                for (Map.Entry<String, Integer> item : cart.items().entrySet()) {
+                    Product p = inventory.find(item.getKey());
+                    if (p == null) throw new IllegalArgumentException("Unknown SKU: " + item.getKey());
+                    if (p.stock < item.getValue()) throw new IllegalStateException("Not enough stock for " + p.sku);
+                    lines.put(p, item.getValue());
+                }
+                long total = 0;
+                for (Map.Entry<Product, Integer> line : lines.entrySet()) {
+                    line.getKey().stock -= line.getValue();
+                    total += line.getKey().priceCents * line.getValue();
+                }
+                if ("SAVE10".equals(coupon)) {
+                    total -= total * 10 / 100;
+                }
+                return total;
+            }
+        }
+
+- slug: java-user-registry
+  title: User registry
+  language: java
+  difficulty: hard
+  tags: [security, concurrency, collections, error-handling]
+  description: |
+    The user registration module of a small web app. Several request threads call it at the same time.
+
+    Intended behaviour:
+    - register(email, password) creates a user. Emails are unique ignoring case; a duplicate or a password shorter than 6 characters
+      fails with IllegalArgumentException.
+    - login(email, password) returns true only for the right password, and false (never an exception) for an unknown email.
+    - Passwords are stored with a salted, slow password hash (for example PBKDF2 from javax.crypto) and never written to logs.
+    - Ids are unique even under concurrent use. removeInactive() deletes every inactive user and returns how many it removed.
+
+    Hidden tests call the public constructors and methods of every class, so keep those signatures.
+  files:
+    - path: src/main/java/com/acme/users/User.java
+      content: |
+        package com.acme.users;
+
+        public class User {
+            private final long id;
+            private final String email;
+            private final String passwordHash;
+            private boolean active = true;
+
+            public User(long id, String email, String passwordHash) {
+                this.id = id;
+                this.email = email;
+                this.passwordHash = passwordHash;
+            }
+
+            public long getId() { return id; }
+            public String getEmail() { return email; }
+            public String getPasswordHash() { return passwordHash; }
+            public boolean isActive() { return active; }
+            public void setActive(boolean active) { this.active = active; }
+        }
+    - path: src/main/java/com/acme/users/IdGenerator.java
+      content: |
+        package com.acme.users;
+
+        public class IdGenerator {
+            private long next = 1;
+
+            public long nextId() {
+                return next++;
+            }
+        }
+    - path: src/main/java/com/acme/users/UserRepository.java
+      content: |
+        package com.acme.users;
+
+        import java.util.ArrayList;
+        import java.util.List;
+
+        public class UserRepository {
+            private final List<User> users = new ArrayList<>();
+
+            public void save(User user) {
+                users.add(user);
+            }
+
+            public User findByEmail(String email) {
+                for (User u : users) {
+                    if (u.getEmail().equals(email)) {
+                        return u;
+                    }
+                }
+                return null;
+            }
+
+            public List<User> findAll() {
+                return users;
+            }
+
+            public int removeInactive() {
+                int removed = 0;
+                for (User u : users) {
+                    if (!u.isActive()) {
+                        users.remove(u);
+                        removed++;
+                    }
+                }
+                return removed;
+            }
+        }
+    - path: src/main/java/com/acme/users/PasswordHasher.java
+      content: |
+        package com.acme.users;
+
+        public class PasswordHasher {
+            public String hash(String password) {
+                return Integer.toHexString(password.hashCode());
+            }
+
+            public boolean matches(String password, String hash) {
+                return hash(password) == hash;
+            }
+        }
+    - path: src/main/java/com/acme/users/UserService.java
+      content: |
+        package com.acme.users;
+
+        public class UserService {
+            private final UserRepository repo = new UserRepository();
+            private final IdGenerator ids = new IdGenerator();
+            private final PasswordHasher hasher = new PasswordHasher();
+
+            public User register(String email, String password) {
+                try {
+                    if (repo.findByEmail(email) != null) {
+                        throw new IllegalArgumentException("Email already registered");
+                    }
+                    if (password.length() < 6) {
+                        throw new IllegalArgumentException("Password too short");
+                    }
+                    User user = new User(ids.nextId(), email, hasher.hash(password));
+                    repo.save(user);
+                    System.out.println("Registered " + email + " with password " + password);
+                    return user;
+                } catch (Exception e) {
+                    return null;
+                }
+            }
+
+            public boolean login(String email, String password) {
+                User u = repo.findByEmail(email);
+                return hasher.matches(password, u.getPasswordHash());
+            }
+
+            public UserRepository repository() {
+                return repo;
+            }
+        }
+  issues:
+    - id: 1
+      file: src/main/java/com/acme/users/IdGenerator.java
+      line: 7
+      category: concurrency
+      title: Id counter is not thread-safe
+      detail: >
+        next++ is a read-modify-write on a plain long. Two threads can read the same value and hand out the same id
+        (and long writes are not even guaranteed atomic). Use an AtomicLong and getAndIncrement().
+    - id: 2
+      file: src/main/java/com/acme/users/UserRepository.java
+      line: 7
+      category: concurrency
+      title: Shared ArrayList and check-then-act registration
+      detail: >
+        The repository is shared by request threads but backed by an unsynchronised ArrayList, and register() checks
+        findByEmail() and then save()s as two separate steps, so two concurrent registrations of the same email can both
+        succeed. Make the check-and-insert atomic (synchronize, or use a ConcurrentHashMap keyed by normalised email with putIfAbsent).
+    - id: 3
+      file: src/main/java/com/acme/users/UserRepository.java
+      line: 15
+      category: bug
+      title: Email lookup is case-sensitive
+      detail: >
+        Bob@Example.com and bob@example.com are treated as different users, so duplicates slip through and login depends
+        on how the user typed their email. Normalise emails (trim + toLowerCase(Locale.ROOT)) when storing and looking up.
+    - id: 4
+      file: src/main/java/com/acme/users/UserRepository.java
+      line: 23
+      category: design
+      title: findAll() leaks the internal list
+      detail: >
+        Returning the backing list lets any caller add, remove or clear users behind the repository's back. Return
+        List.copyOf(users) or an unmodifiable view.
+    - id: 5
+      file: src/main/java/com/acme/users/UserRepository.java
+      line: 30
+      category: bug
+      title: Removing while iterating throws ConcurrentModificationException
+      detail: >
+        Calling users.remove(u) inside a for-each over the same list invalidates the iterator, so the next iteration
+        throws ConcurrentModificationException (or silently skips an element when it was the second to last). Use
+        users.removeIf(u -> !u.isActive()) or an explicit Iterator.remove().
+    - id: 6
+      file: src/main/java/com/acme/users/PasswordHasher.java
+      line: 5
+      category: security
+      title: String.hashCode() is not a password hash
+      detail: >
+        hashCode() is a fast, unsalted 32-bit checksum: different passwords collide ("Aa" and "BB" hash the same),
+        identical passwords produce identical hashes, and brute-forcing it is trivial. Use a salted, deliberately slow
+        algorithm such as PBKDF2WithHmacSHA256 (or bcrypt/argon2), store the salt with the hash, and compare in
+        constant time with MessageDigest.isEqual.
+    - id: 7
+      file: src/main/java/com/acme/users/PasswordHasher.java
+      line: 9
+      category: bug
+      title: Hashes compared with ==
+      detail: >
+        hash() builds a new String every call, so == is false even for the correct password and nobody can ever log in.
+        Compare contents (equals, or better a constant-time MessageDigest.isEqual on the bytes).
+    - id: 8
+      file: src/main/java/com/acme/users/UserService.java
+      line: 18
+      category: security
+      title: Plain-text password written to the log
+      detail: >
+        Logging the password leaks every user's credentials to anyone with log access and to log aggregation systems.
+        Never log secrets; log the user id or email at most.
+    - id: 9
+      file: src/main/java/com/acme/users/UserService.java
+      line: 20
+      category: error-handling
+      title: Exceptions swallowed and null returned
+      detail: >
+        catch (Exception e) { return null; } turns "email taken" and "password too short" into a silent null, hides
+        real bugs (like NullPointerException for a null password), and pushes null checks onto every caller.
+        Let the IllegalArgumentExceptions propagate and remove the blanket catch.
+    - id: 10
+      file: src/main/java/com/acme/users/UserService.java
+      line: 27
+      category: bug
+      title: login() throws NullPointerException for an unknown email
+      detail: >
+        findByEmail returns null for an unknown email and u.getPasswordHash() then throws. Return false when no user is
+        found (ideally still doing comparable work so response timing does not reveal which emails exist).
+  tests:
+    - path: RepoTests.java
+      content: |
+        import com.acme.users.*;
+        import java.io.ByteArrayOutputStream;
+        import java.io.PrintStream;
+        import java.util.Set;
+        import java.util.concurrent.ConcurrentHashMap;
+
+        public class RepoTests {
+            interface Body { void run() throws Exception; }
+
+            static int failed = 0;
+
+            public static void main(String[] args) {
+                test("IdGenerator never hands out the same id twice under concurrency", () -> {
+                    IdGenerator ids = new IdGenerator();
+                    Set<Long> seen = ConcurrentHashMap.newKeySet();
+                    Thread[] threads = new Thread[4];
+                    for (int i = 0; i < threads.length; i++) {
+                        threads[i] = new Thread(() -> {
+                            for (int j = 0; j < 50_000; j++) seen.add(ids.nextId());
+                        });
+                        threads[i].start();
+                    }
+                    for (Thread t : threads) t.join();
+                    check(seen.size() == 200_000, "expected 200000 unique ids but got " + seen.size());
+                });
+                test("removeInactive() removes every inactive user", () -> {
+                    UserRepository repo = new UserRepository();
+                    User a = new User(1, "a@x.com", "h");
+                    User b = new User(2, "b@x.com", "h");
+                    User c = new User(3, "c@x.com", "h");
+                    User d = new User(4, "d@x.com", "h");
+                    a.setActive(false);
+                    c.setActive(false);
+                    repo.save(a);
+                    repo.save(b);
+                    repo.save(c);
+                    repo.save(d);
+                    int removed = repo.removeInactive();
+                    check(removed == 2, "expected 2 removed but got " + removed);
+                    check(repo.findByEmail("a@x.com") == null && repo.findByEmail("c@x.com") == null, "inactive users are still stored");
+                    check(repo.findByEmail("b@x.com") != null && repo.findByEmail("d@x.com") != null, "active users were removed");
+                });
+                test("findAll() does not expose the repository's internal list", () -> {
+                    UserRepository repo = new UserRepository();
+                    repo.save(new User(1, "a@x.com", "h"));
+                    try {
+                        repo.findAll().clear();
+                    } catch (UnsupportedOperationException expected) {
+                    }
+                    check(repo.findByEmail("a@x.com") != null, "clearing the list from findAll() deleted users from the repository");
+                });
+                test("A password matches its own hash", () -> {
+                    PasswordHasher h = new PasswordHasher();
+                    check(h.matches("s3cret-pw", h.hash("s3cret-pw")), "matches(pw, hash(pw)) returned false");
+                });
+                test("Different passwords never match, even with equal hashCode()", () -> {
+                    PasswordHasher h = new PasswordHasher();
+                    check(!h.matches("BB", h.hash("Aa")), "\"BB\" matched the hash of \"Aa\"");
+                });
+                test("Hashes are salted so equal passwords hash differently", () -> {
+                    PasswordHasher h = new PasswordHasher();
+                    check(!h.hash("same-password").equals(h.hash("same-password")), "two hashes of the same password are identical");
+                });
+                test("Registering a taken email fails with IllegalArgumentException", () -> {
+                    UserService svc = new UserService();
+                    svc.register("a@x.com", "password1");
+                    expectThrows(IllegalArgumentException.class, () -> svc.register("a@x.com", "password2"), "registering a@x.com twice");
+                });
+                test("Emails are unique ignoring case", () -> {
+                    UserService svc = new UserService();
+                    svc.register("Bob@Example.com", "password1");
+                    expectThrows(IllegalArgumentException.class, () -> svc.register("bob@example.com", "password2"),
+                            "registering bob@example.com after Bob@Example.com");
+                });
+                test("Passwords never appear in the logs", () -> {
+                    PrintStream out = System.out;
+                    PrintStream err = System.err;
+                    ByteArrayOutputStream captured = new ByteArrayOutputStream();
+                    PrintStream capture = new PrintStream(captured, true);
+                    System.setOut(capture);
+                    System.setErr(capture);
+                    try {
+                        new UserService().register("carol@x.com", "hunter2-secret");
+                    } finally {
+                        System.setOut(out);
+                        System.setErr(err);
+                    }
+                    check(!captured.toString().contains("hunter2-secret"), "the password was printed");
+                });
+                test("Login with an unknown email returns false", () -> {
+                    check(!new UserService().login("ghost@x.com", "whatever1"), "login returned true");
+                });
+                test("Login accepts the right password and rejects a wrong one", () -> {
+                    UserService svc = new UserService();
+                    svc.register("dave@x.com", "correct-horse");
+                    check(svc.login("dave@x.com", "correct-horse"), "login with the right password failed");
+                    check(!svc.login("dave@x.com", "wrong-horse"), "login with a wrong password succeeded");
+                });
+                System.exit(failed == 0 ? 0 : 1);
+            }
+
+            static void test(String name, Body body) {
+                try {
+                    body.run();
+                    System.out.println("PASS " + name);
+                } catch (Throwable t) {
+                    failed++;
+                    String why = t instanceof AssertionError && t.getMessage() != null ? t.getMessage() : t.toString();
+                    System.out.println("FAIL " + name + ": " + why.replace('\n', ' '));
+                }
+            }
+
+            static void check(boolean ok, String message) {
+                if (!ok) throw new AssertionError(message);
+            }
+
+            static void expectThrows(Class<? extends Throwable> type, Body body, String what) {
+                try {
+                    body.run();
+                } catch (Throwable t) {
+                    if (type.isInstance(t)) return;
+                    throw new AssertionError(what + " should throw " + type.getSimpleName() + " but threw " + t);
+                }
+                throw new AssertionError(what + " should throw " + type.getSimpleName() + " but threw nothing");
+            }
+        }
+  solution:
+    - path: src/main/java/com/acme/users/IdGenerator.java
+      content: |
+        package com.acme.users;
+
+        import java.util.concurrent.atomic.AtomicLong;
+
+        public class IdGenerator {
+            private final AtomicLong next = new AtomicLong(1);
+
+            public long nextId() {
+                return next.getAndIncrement();
+            }
+        }
+    - path: src/main/java/com/acme/users/UserRepository.java
+      content: |
+        package com.acme.users;
+
+        import java.util.ArrayList;
+        import java.util.List;
+        import java.util.Locale;
+
+        public class UserRepository {
+            private final List<User> users = new ArrayList<>();
+
+            public synchronized void save(User user) {
+                users.add(user);
+            }
+
+            public synchronized User findByEmail(String email) {
+                String key = normalize(email);
+                for (User u : users) {
+                    if (normalize(u.getEmail()).equals(key)) {
+                        return u;
+                    }
+                }
+                return null;
+            }
+
+            public synchronized List<User> findAll() {
+                return List.copyOf(users);
+            }
+
+            public synchronized int removeInactive() {
+                int before = users.size();
+                users.removeIf(u -> !u.isActive());
+                return before - users.size();
+            }
+
+            static String normalize(String email) {
+                return email.strip().toLowerCase(Locale.ROOT);
+            }
+        }
+    - path: src/main/java/com/acme/users/PasswordHasher.java
+      content: |
+        package com.acme.users;
+
+        import java.security.GeneralSecurityException;
+        import java.security.MessageDigest;
+        import java.security.SecureRandom;
+        import java.util.Base64;
+        import javax.crypto.SecretKeyFactory;
+        import javax.crypto.spec.PBEKeySpec;
+
+        public class PasswordHasher {
+            private static final int ITERATIONS = 120_000;
+            private static final SecureRandom RANDOM = new SecureRandom();
+
+            public String hash(String password) {
+                byte[] salt = new byte[16];
+                RANDOM.nextBytes(salt);
+                return encode(salt) + ":" + encode(derive(password, salt));
+            }
+
+            public boolean matches(String password, String hash) {
+                String[] parts = hash.split(":");
+                if (parts.length != 2) return false;
+                byte[] expected = Base64.getDecoder().decode(parts[1]);
+                return MessageDigest.isEqual(expected, derive(password, Base64.getDecoder().decode(parts[0])));
+            }
+
+            private static byte[] derive(String password, byte[] salt) {
+                try {
+                    var spec = new PBEKeySpec(password.toCharArray(), salt, ITERATIONS, 256);
+                    return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+                } catch (GeneralSecurityException e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+
+            private static String encode(byte[] bytes) {
+                return Base64.getEncoder().encodeToString(bytes);
+            }
+        }
+    - path: src/main/java/com/acme/users/UserService.java
+      content: |
+        package com.acme.users;
+
+        public class UserService {
+            private final UserRepository repo = new UserRepository();
+            private final IdGenerator ids = new IdGenerator();
+            private final PasswordHasher hasher = new PasswordHasher();
+
+            public User register(String email, String password) {
+                if (password == null || password.length() < 6) {
+                    throw new IllegalArgumentException("Password too short");
+                }
+                String hash = hasher.hash(password);
+                synchronized (repo) {
+                    if (repo.findByEmail(email) != null) {
+                        throw new IllegalArgumentException("Email already registered");
+                    }
+                    User user = new User(ids.nextId(), UserRepository.normalize(email), hash);
+                    repo.save(user);
+                    System.out.println("Registered user " + user.getId());
+                    return user;
+                }
+            }
+
+            public boolean login(String email, String password) {
+                User u = repo.findByEmail(email);
+                return u != null && hasher.matches(password, u.getPasswordHash());
+            }
+
+            public UserRepository repository() {
+                return repo;
+            }
+        }

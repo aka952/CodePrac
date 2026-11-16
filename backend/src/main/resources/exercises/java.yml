@@ -1,0 +1,453 @@
+- slug: java-string-immutability
+  title: Strings never change
+  language: java
+  type: predict_output
+  difficulty: easy
+  tags: [strings, immutability]
+  question: What does this program print?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            String s = "hello";
+            s.toUpperCase();
+            s.concat(" world");
+            System.out.println(s);
+            s = s.toUpperCase();
+            System.out.println(s);
+        }
+    }
+  answer: |
+    hello
+    HELLO
+  explanation: >
+    String is immutable. toUpperCase() and concat() return NEW strings; they never modify the original.
+    Lines 4-5 throw their results away. Only line 7 reassigns s, so the second print shows HELLO.
+  hint: Look at which method calls have their return value stored.
+
+- slug: java-switch-fallthrough
+  title: Switch without break
+  language: java
+  type: predict_output
+  difficulty: easy
+  tags: [control-flow, switch]
+  question: What does this program print?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            int day = 2;
+            switch (day) {
+                case 1:
+                    System.out.println("Mon");
+                case 2:
+                    System.out.println("Tue");
+                case 3:
+                    System.out.println("Wed");
+                    break;
+                default:
+                    System.out.println("Other");
+            }
+        }
+    }
+  answer: |
+    Tue
+    Wed
+  explanation: >
+    Classic (colon-style) switch jumps to the matching case and then FALLS THROUGH every following case
+    until it hits a break. case 2 prints Tue, falls into case 3, prints Wed, then breaks.
+    Arrow-style switch (case 2 -> ...) does not fall through.
+
+- slug: java-char-arithmetic
+  title: char + int
+  language: java
+  type: predict_output
+  difficulty: easy
+  tags: [types, strings]
+  question: What does this program print?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            char c = 'A';
+            System.out.println(c + 1);
+            System.out.println((char) (c + 1));
+            System.out.println("" + c + 1);
+            System.out.println(c + 1 + "");
+        }
+    }
+  answer: |
+    66
+    B
+    A1
+    66
+  explanation: >
+    char is a numeric type. c + 1 promotes to int ('A' is 65), giving 66. Casting back gives 'B'.
+    The + operator is evaluated left to right: "" + c makes a String first, so + 1 is concatenation (A1).
+    In c + 1 + "", the numeric addition happens first (66), then it is turned into a String.
+
+- slug: java-int-overflow
+  title: One past the max
+  language: java
+  type: predict_output
+  difficulty: easy
+  tags: [types, overflow]
+  question: What does this program print?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            int big = Integer.MAX_VALUE;
+            int result = big + 1;
+            long safe = big + 1L;
+            System.out.println(result + " " + safe);
+        }
+    }
+  answer: |
+    -2147483648 2147483648
+  explanation: >
+    int arithmetic silently wraps around on overflow (two's complement), so MAX_VALUE + 1 becomes MIN_VALUE.
+    Adding 1L makes the expression a long, which has room for the result.
+    Use Math.addExact when overflow should throw instead of wrapping.
+
+- slug: java-loop-trace
+  title: Skipping with continue
+  language: java
+  type: trace
+  difficulty: easy
+  tags: [loops, tracing]
+  question: What is the value of `x` when the loop finishes?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            int x = 0;
+            for (int i = 0; i < 5; i++) {
+                if (i % 2 == 0) continue;
+                x += i * i;
+            }
+            System.out.println(x);
+        }
+    }
+  answer: "10"
+  explanation: >
+    continue skips even i (0, 2, 4). Only i = 1 and i = 3 reach the addition: 1*1 + 3*3 = 10.
+  hint: Write down i for each iteration and cross out the ones that hit continue.
+
+- slug: java-off-by-one
+  title: Summing an array
+  language: java
+  type: spot_bug
+  difficulty: easy
+  tags: [arrays, loops, bugs]
+  question: This method crashes. Click the line that contains the bug.
+  code: |
+    public class Main {
+        static int sum(int[] nums) {
+            int total = 0;
+            for (int i = 0; i <= nums.length; i++) {
+                total += nums[i];
+            }
+            return total;
+        }
+
+        public static void main(String[] args) {
+            System.out.println(sum(new int[]{1, 2, 3}));
+        }
+    }
+  answer: "4"
+  explanation: >
+    Valid indexes are 0 .. length-1. The condition i <= nums.length lets i reach 3, and nums[3] throws
+    ArrayIndexOutOfBoundsException. The fix is i < nums.length (or an enhanced for loop).
+
+- slug: java-pass-by-value
+  title: Reassigning a parameter
+  language: java
+  type: predict_output
+  difficulty: medium
+  tags: [methods, references]
+  question: What does this program print?
+  code: |
+    import java.util.ArrayList;
+    import java.util.List;
+
+    public class Main {
+        static void modify(List<Integer> list) {
+            list.add(4);
+            list = new ArrayList<>();
+            list.add(99);
+        }
+
+        public static void main(String[] args) {
+            List<Integer> nums = new ArrayList<>(List.of(1, 2, 3));
+            modify(nums);
+            System.out.println(nums);
+        }
+    }
+  answer: |
+    [1, 2, 3, 4]
+  explanation: >
+    Java is always pass-by-value; for objects, the value copied is the reference.
+    list.add(4) uses the copied reference to change the shared list. Then list = new ArrayList<>() only
+    re-points the method's local copy, so 99 goes into a list that main never sees.
+
+- slug: java-integer-cache
+  title: Comparing Integers with ==
+  language: java
+  type: predict_output
+  difficulty: medium
+  tags: [boxing, equality]
+  question: What does this program print?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            Integer a = 127, b = 127;
+            Integer c = 128, d = 128;
+            System.out.println(a == b);
+            System.out.println(c == d);
+            System.out.println(c.equals(d));
+        }
+    }
+  answer: |
+    true
+    false
+    true
+  explanation: >
+    Autoboxing calls Integer.valueOf, which caches objects for -128..127. a and b are the same cached object,
+    so == (reference comparison) is true. 128 is outside the cache, so c and d are different objects.
+    equals() compares values, which is what you almost always want for wrapper types.
+
+- slug: java-finally-return
+  title: finally after return
+  language: java
+  type: predict_output
+  difficulty: medium
+  tags: [exceptions, finally]
+  question: What does this program print?
+  code: |
+    public class Main {
+        static int compute() {
+            int x = 1;
+            try {
+                return x;
+            } finally {
+                x = 2;
+                System.out.println("finally x=" + x);
+            }
+        }
+
+        public static void main(String[] args) {
+            System.out.println(compute());
+        }
+    }
+  answer: |
+    finally x=2
+    1
+  explanation: >
+    When return x runs, the VALUE 1 is evaluated and saved. finally then runs (printing x=2), but changing
+    the local variable does not change the already-saved return value. So main prints 1.
+    (A return statement inside finally WOULD override it, which is why that is considered bad practice.)
+
+- slug: java-increment-operators
+  title: i++ vs ++i
+  language: java
+  type: predict_output
+  difficulty: medium
+  tags: [operators, tracing]
+  question: What does this program print?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            int i = 5;
+            int j = i++ + ++i;
+            i = i++;
+            System.out.println(i + " " + j);
+        }
+    }
+  answer: |
+    7 12
+  explanation: >
+    i++ yields 5 then makes i = 6. ++i makes i = 7 and yields 7. So j = 5 + 7 = 12.
+    i = i++ yields the old value (7), increments i to 8, then the assignment writes 7 back. i stays 7.
+
+- slug: java-string-equality-bug
+  title: Admin check
+  language: java
+  type: spot_bug
+  difficulty: medium
+  tags: [strings, equality, bugs]
+  question: role("admin") returns "read only". Click the line that causes it.
+  code: |
+    public class Main {
+        static String role(String user) {
+            String admin = new String("admin");
+            if (user == admin) {
+                return "full access";
+            }
+            return "read only";
+        }
+
+        public static void main(String[] args) {
+            System.out.println(role("admin"));
+        }
+    }
+  answer: "4"
+  explanation: >
+    == compares references, not contents. new String("admin") is a distinct object, so the check is
+    always false. Use user.equals(admin) (or "admin".equals(user) to be null-safe).
+
+- slug: java-merge-trace
+  title: Counting words with merge
+  language: java
+  type: trace
+  difficulty: medium
+  tags: [collections, maps, tracing]
+  question: What is the value of `answer`?
+  code: |
+    import java.util.HashMap;
+    import java.util.Map;
+
+    public class Main {
+        public static void main(String[] args) {
+            String text = "the cat and the hat and the bat";
+            Map<String, Integer> counts = new HashMap<>();
+            for (String w : text.split(" ")) {
+                counts.merge(w, 1, Integer::sum);
+            }
+            int answer = counts.get("the") * 10 + counts.getOrDefault("dog", 0) + counts.get("and");
+            System.out.println(answer);
+        }
+    }
+  answer: "32"
+  explanation: >
+    merge(w, 1, Integer::sum) inserts 1 for a new key, otherwise adds 1 to the existing count.
+    "the" appears 3 times, "and" twice, "dog" never (getOrDefault returns 0). 3 * 10 + 0 + 2 = 32.
+
+- slug: java-list-remove-overload
+  title: remove(1) vs remove(Integer)
+  language: java
+  type: predict_output
+  difficulty: hard
+  tags: [collections, overloading, boxing]
+  question: What does this program print?
+  code: |
+    import java.util.ArrayList;
+    import java.util.List;
+
+    public class Main {
+        public static void main(String[] args) {
+            List<Integer> list = new ArrayList<>(List.of(10, 20, 30, 1));
+            list.remove(1);
+            System.out.println(list);
+            list.remove(Integer.valueOf(1));
+            System.out.println(list);
+        }
+    }
+  answer: |
+    [10, 30, 1]
+    [10, 30]
+  explanation: >
+    List has two overloads: remove(int index) and remove(Object o). With a plain int literal the compiler
+    picks remove(int) without boxing, so it removes INDEX 1 (the value 20).
+    Passing an Integer object selects remove(Object), which removes the element equal to 1.
+
+- slug: java-hashset-no-hashcode
+  title: equals without hashCode
+  language: java
+  type: predict_output
+  difficulty: hard
+  tags: [collections, equality, hashing]
+  question: What does this program print?
+  code: |
+    import java.util.HashSet;
+    import java.util.Set;
+
+    public class Main {
+        static class Point {
+            final int x, y;
+
+            Point(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                return o instanceof Point p && p.x == x && p.y == y;
+            }
+        }
+
+        public static void main(String[] args) {
+            Set<Point> seen = new HashSet<>();
+            seen.add(new Point(1, 2));
+            System.out.println(seen.contains(new Point(1, 2)));
+        }
+    }
+  answer: |
+    false
+  explanation: >
+    HashSet first uses hashCode() to pick a bucket and only then calls equals(). Point overrides equals but
+    not hashCode, so the two equal points get different identity hash codes and land in different buckets;
+    equals is never even called. Rule: whenever you override equals, override hashCode too (or use a record).
+
+- slug: java-init-order
+  title: Initialization order
+  language: java
+  type: predict_output
+  difficulty: hard
+  tags: [classes, inheritance, initialization]
+  question: What does this program print?
+  code: |
+    public class Main {
+        static class Parent {
+            static { System.out.println("Parent static"); }
+            { System.out.println("Parent instance"); }
+            Parent() { System.out.println("Parent constructor"); }
+        }
+
+        static class Child extends Parent {
+            static { System.out.println("Child static"); }
+            { System.out.println("Child instance"); }
+            Child() { System.out.println("Child constructor"); }
+        }
+
+        public static void main(String[] args) {
+            new Child();
+            System.out.println("---");
+            new Child();
+        }
+    }
+  answer: |
+    Parent static
+    Child static
+    Parent instance
+    Parent constructor
+    Child instance
+    Child constructor
+    ---
+    Parent instance
+    Parent constructor
+    Child instance
+    Child constructor
+  explanation: >
+    Static initializers run once, when each class is first initialized, parent before child.
+    For every new object, construction goes top-down: the parent's instance initializers and constructor
+    complete before the child's instance initializers and constructor body run.
+    The second new Child() repeats only the instance part.
+
+- slug: java-stringbuilder-chain
+  title: Chained StringBuilder
+  language: java
+  type: trace
+  difficulty: hard
+  tags: [strings, evaluation-order, tracing]
+  question: What is the value of `result`?
+  code: |
+    public class Main {
+        public static void main(String[] args) {
+            StringBuilder sb = new StringBuilder("java");
+            sb.reverse().append("!").insert(0, sb.length());
+            String result = sb.toString();
+            System.out.println(result);
+        }
+    }
+  answer: "5avaj!"
+  explanation: >
+    StringBuilder methods mutate the same object and return it, so the chain works on one buffer.
+    reverse() gives "avaj", append("!") gives "avaj!". Only now is the argument sb.length() evaluated,
+    because the receiver expression to the left is evaluated first, so it is 5. insert(0, 5) gives "5avaj!".
