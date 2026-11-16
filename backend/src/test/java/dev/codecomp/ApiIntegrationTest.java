@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
@@ -167,7 +168,8 @@ class ApiIntegrationTest {
     @Test
     void repoIssuesStayHiddenUntilReviewed() throws Exception {
         mvc.perform(get("/api/repos").header("X-User-Id", user))
-                .andExpect(jsonPath("$.length()", greaterThanOrEqualTo(2)))
+                .andExpect(jsonPath("$.length()", greaterThanOrEqualTo(5)))
+                .andExpect(jsonPath("$[0].difficulty", is("EASY")))
                 .andExpect(jsonPath("$[*].status", everyItem(is("NEW"))));
         mvc.perform(get("/api/repos/java-checkout-service").header("X-User-Id", user))
                 .andExpect(jsonPath("$.files.length()", is(4)))
@@ -189,7 +191,7 @@ class ApiIntegrationTest {
                 .andExpect(jsonPath("$.revealed", is(true)))
                 .andExpect(jsonPath("$.issues.length()", is(7)));
         mvc.perform(get("/api/repos").header("X-User-Id", user))
-                .andExpect(jsonPath("$[0].status", is("ATTEMPTED")));
+                .andExpect(jsonPath("$[?(@.slug == 'java-checkout-service')].status", contains("ATTEMPTED")));
     }
 
     @Test
@@ -248,7 +250,8 @@ class ApiIntegrationTest {
         mvc.perform(get("/api/repos/java-user-registry").header("X-User-Id", user))
                 .andExpect(jsonPath("$.questionsLeft", is(0)));
         // asking questions is not an attempt, and the quota is per exercise
-        mvc.perform(get("/api/repos").header("X-User-Id", user)).andExpect(jsonPath("$[1].status", is("NEW")));
+        mvc.perform(get("/api/repos").header("X-User-Id", user))
+                .andExpect(jsonPath("$[?(@.slug == 'java-user-registry')].status", contains("NEW")));
         mvc.perform(get("/api/repos/java-checkout-service").header("X-User-Id", user))
                 .andExpect(jsonPath("$.questionsLeft", is(5)));
     }

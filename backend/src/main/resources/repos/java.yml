@@ -1,3 +1,378 @@
+- slug: java-library-loans
+  title: Library loans
+  language: java
+  difficulty: easy
+  tags: [equals-hashcode, off-by-one, dates, encapsulation]
+  description: |
+    The lending desk of a small library. It mostly works when one person tries it once.
+
+    Intended behaviour:
+    - Two Book objects with the same ISBN are the same book, including inside a HashSet or HashMap.
+    - A member can hold at most 3 books. borrow() fails with IllegalStateException when the member is at the limit or the book is already on loan.
+    - Loans are due 14 days after borrowing. returnBook() returns the late fee in cents: 25 per day late, 0 when on time or early.
+    - A returned book is available again. Returning a book the member has not borrowed fails with IllegalArgumentException.
+    - A member's loans can only change through LoanService.
+
+    Hidden tests call the public constructors and methods (Book, Member, LoanService.borrow/returnBook), so keep those signatures.
+  files:
+    - path: src/main/java/com/library/Book.java
+      content: |
+        package com.library;
+
+        public class Book {
+            private final String isbn;
+            private final String title;
+            private boolean available = true;
+
+            public Book(String isbn, String title) {
+                this.isbn = isbn;
+                this.title = title;
+            }
+
+            public String getIsbn() { return isbn; }
+            public String getTitle() { return title; }
+            public boolean isAvailable() { return available; }
+            public void setAvailable(boolean available) { this.available = available; }
+
+            @Override
+            public boolean equals(Object o) {
+                if (!(o instanceof Book)) return false;
+                return isbn.equals(((Book) o).isbn);
+            }
+        }
+    - path: src/main/java/com/library/Member.java
+      content: |
+        package com.library;
+
+        import java.util.ArrayList;
+        import java.util.List;
+
+        public class Member {
+            private final String name;
+            private final List<Book> loans = new ArrayList<>();
+
+            public Member(String name) {
+                this.name = name;
+            }
+
+            public String getName() { return name; }
+
+            public List<Book> getLoans() {
+                return loans;
+            }
+        }
+    - path: src/main/java/com/library/LoanService.java
+      content: |
+        package com.library;
+
+        import java.time.LocalDate;
+        import java.util.HashMap;
+        import java.util.Map;
+
+        public class LoanService {
+            public static final int MAX_LOANS = 3;
+            public static final int LOAN_DAYS = 14;
+            public static final int FEE_PER_DAY_CENTS = 25;
+
+            private final Map<String, LocalDate> dueDates = new HashMap<>();
+
+            public void borrow(Member member, Book book, LocalDate today) {
+                if (member.getLoans().size() > MAX_LOANS) {
+                    throw new IllegalStateException("Loan limit reached");
+                }
+                book.setAvailable(false);
+                member.getLoans().add(book);
+                dueDates.put(book.getIsbn(), today.plusDays(LOAN_DAYS));
+            }
+
+            /** Returns the late fee in cents. */
+            public int returnBook(Member member, Book book, LocalDate today) {
+                member.getLoans().remove(book);
+                LocalDate due = dueDates.get(book.getIsbn());
+                int daysLate = today.getDayOfYear() - due.getDayOfYear();
+                return daysLate * FEE_PER_DAY_CENTS;
+            }
+        }
+  issues:
+    - id: 1
+      file: src/main/java/com/library/Book.java
+      line: 19
+      category: bug
+      title: equals() overridden without hashCode()
+      detail: >
+        Equal objects must have equal hash codes. Without hashCode(), two Book objects with the same ISBN land in
+        different hash buckets, so HashSet.contains and HashMap.get fail to find a book that is "equal".
+        Add hashCode() based on the same field: return isbn.hashCode().
+    - id: 2
+      file: src/main/java/com/library/Member.java
+      line: 17
+      category: design
+      title: getLoans() hands out the internal list
+      detail: >
+        Any caller can add or remove loans directly and bypass the loan limit and availability rules. LoanService
+        itself relies on this to modify the list. Return an unmodifiable copy (List.copyOf) and give Member
+        package-private addLoan/removeLoan methods for LoanService to use.
+    - id: 3
+      file: src/main/java/com/library/LoanService.java
+      line: 15
+      category: bug
+      title: Loan limit is off by one
+      detail: >
+        size() > MAX_LOANS only refuses the fifth book: with 3 loans the check is false and a fourth is allowed.
+        The limit check must be size() >= MAX_LOANS.
+    - id: 4
+      file: src/main/java/com/library/LoanService.java
+      line: 18
+      category: bug
+      title: A book already on loan can be borrowed again
+      detail: >
+        borrow() never checks book.isAvailable(), so the same copy can be lent to two members at once and the
+        first due date is overwritten. Throw IllegalStateException when the book is not available.
+    - id: 5
+      file: src/main/java/com/library/LoanService.java
+      line: 25
+      category: bug
+      title: Returned books never become available again
+      detail: >
+        returnBook() removes the loan but does not call book.setAvailable(true) or clear the due date, so the
+        book looks permanently on loan. Mark it available and remove its due-date entry.
+    - id: 6
+      file: src/main/java/com/library/LoanService.java
+      line: 26
+      category: error-handling
+      title: Returning a book that is not on loan crashes
+      detail: >
+        dueDates.get() returns null for a book that was never borrowed and the next line throws
+        NullPointerException. Check that the member actually holds the book and throw an
+        IllegalArgumentException otherwise.
+    - id: 7
+      file: src/main/java/com/library/LoanService.java
+      line: 27
+      category: bug
+      title: Late fee uses day-of-year arithmetic
+      detail: >
+        Subtracting getDayOfYear() values is wrong across a year boundary (2 January minus 30 December gives -362),
+        and an early return gives a negative number of days and therefore a negative fee. Use
+        ChronoUnit.DAYS.between(due, today) and clamp it at zero with Math.max.
+  tests:
+    - path: RepoTests.java
+      content: |
+        import com.library.*;
+        import java.time.LocalDate;
+        import java.util.HashSet;
+        import java.util.Set;
+
+        public class RepoTests {
+            interface Body { void run() throws Exception; }
+
+            static int failed = 0;
+            static final LocalDate MARCH_1 = LocalDate.of(2026, 3, 1);
+
+            public static void main(String[] args) {
+                test("Books with the same ISBN are the same book in a HashSet", () -> {
+                    Set<Book> shelf = new HashSet<>();
+                    shelf.add(new Book("111", "Dune"));
+                    check(shelf.contains(new Book("111", "Dune")), "HashSet.contains() did not find an equal book");
+                });
+                test("A member can borrow three books", () -> {
+                    LoanService desk = new LoanService();
+                    Member ann = new Member("Ann");
+                    for (int i = 1; i <= 3; i++) desk.borrow(ann, new Book("isbn-" + i, "Book " + i), MARCH_1);
+                    check(ann.getLoans().size() == 3, "expected 3 loans but got " + ann.getLoans().size());
+                });
+                test("A fourth loan is refused", () -> {
+                    LoanService desk = new LoanService();
+                    Member ann = new Member("Ann");
+                    for (int i = 1; i <= 3; i++) desk.borrow(ann, new Book("isbn-" + i, "Book " + i), MARCH_1);
+                    expectThrows(IllegalStateException.class, () -> desk.borrow(ann, new Book("isbn-4", "Book 4"), MARCH_1), "a fourth borrow");
+                    check(ann.getLoans().size() == 3, "expected 3 loans but got " + ann.getLoans().size());
+                });
+                test("A book on loan cannot be borrowed by someone else", () -> {
+                    LoanService desk = new LoanService();
+                    Book dune = new Book("111", "Dune");
+                    desk.borrow(new Member("Ann"), dune, MARCH_1);
+                    expectThrows(IllegalStateException.class, () -> desk.borrow(new Member("Bob"), dune, MARCH_1), "borrowing a book that is on loan");
+                });
+                test("A returned book is available again", () -> {
+                    LoanService desk = new LoanService();
+                    Member ann = new Member("Ann");
+                    Book dune = new Book("111", "Dune");
+                    desk.borrow(ann, dune, MARCH_1);
+                    desk.returnBook(ann, dune, MARCH_1.plusDays(2));
+                    check(dune.isAvailable(), "the book is still marked as on loan");
+                    check(ann.getLoans().isEmpty(), "the member still holds the book");
+                    desk.borrow(new Member("Bob"), dune, MARCH_1.plusDays(3));
+                });
+                test("Returning on time or early costs nothing", () -> {
+                    LoanService desk = new LoanService();
+                    Member ann = new Member("Ann");
+                    Book early = new Book("111", "Dune");
+                    Book onTime = new Book("222", "Emma");
+                    desk.borrow(ann, early, MARCH_1);
+                    desk.borrow(ann, onTime, MARCH_1);
+                    int earlyFee = desk.returnBook(ann, early, MARCH_1.plusDays(9));
+                    int onTimeFee = desk.returnBook(ann, onTime, MARCH_1.plusDays(14));
+                    check(earlyFee == 0, "early return: expected fee 0 but got " + earlyFee);
+                    check(onTimeFee == 0, "return on the due date: expected fee 0 but got " + onTimeFee);
+                });
+                test("The late fee is 25 cents per day late", () -> {
+                    LoanService desk = new LoanService();
+                    Member ann = new Member("Ann");
+                    Book dune = new Book("111", "Dune");
+                    desk.borrow(ann, dune, MARCH_1);
+                    int fee = desk.returnBook(ann, dune, MARCH_1.plusDays(17));
+                    check(fee == 75, "3 days late: expected 75 but got " + fee);
+                });
+                test("Late fees are right across New Year", () -> {
+                    LoanService desk = new LoanService();
+                    Member ann = new Member("Ann");
+                    Book dune = new Book("111", "Dune");
+                    desk.borrow(ann, dune, LocalDate.of(2025, 12, 16));
+                    int fee = desk.returnBook(ann, dune, LocalDate.of(2026, 1, 2));
+                    check(fee == 75, "due 30 Dec, returned 2 Jan: expected 75 but got " + fee);
+                });
+                test("Returning a book that is not on loan is rejected", () -> {
+                    LoanService desk = new LoanService();
+                    expectThrows(IllegalArgumentException.class, () -> desk.returnBook(new Member("Ann"), new Book("111", "Dune"), MARCH_1),
+                            "returning a book that was never borrowed");
+                });
+                test("getLoans() cannot be used to bypass the loan rules", () -> {
+                    Member ann = new Member("Ann");
+                    try {
+                        ann.getLoans().add(new Book("111", "Dune"));
+                    } catch (UnsupportedOperationException expected) {
+                    }
+                    check(ann.getLoans().isEmpty(), "adding to the list from getLoans() gave the member a loan");
+                });
+                System.exit(failed == 0 ? 0 : 1);
+            }
+
+            static void test(String name, Body body) {
+                try {
+                    body.run();
+                    System.out.println("PASS " + name);
+                } catch (Throwable t) {
+                    failed++;
+                    String why = t instanceof AssertionError && t.getMessage() != null ? t.getMessage() : t.toString();
+                    System.out.println("FAIL " + name + ": " + why.replace('\n', ' '));
+                }
+            }
+
+            static void check(boolean ok, String message) {
+                if (!ok) throw new AssertionError(message);
+            }
+
+            static void expectThrows(Class<? extends Throwable> type, Body body, String what) {
+                try {
+                    body.run();
+                } catch (Throwable t) {
+                    if (type.isInstance(t)) return;
+                    throw new AssertionError(what + " should throw " + type.getSimpleName() + " but threw " + t);
+                }
+                throw new AssertionError(what + " should throw " + type.getSimpleName() + " but threw nothing");
+            }
+        }
+  solution:
+    - path: src/main/java/com/library/Book.java
+      content: |
+        package com.library;
+
+        public class Book {
+            private final String isbn;
+            private final String title;
+            private boolean available = true;
+
+            public Book(String isbn, String title) {
+                this.isbn = isbn;
+                this.title = title;
+            }
+
+            public String getIsbn() { return isbn; }
+            public String getTitle() { return title; }
+            public boolean isAvailable() { return available; }
+            public void setAvailable(boolean available) { this.available = available; }
+
+            @Override
+            public boolean equals(Object o) {
+                if (!(o instanceof Book)) return false;
+                return isbn.equals(((Book) o).isbn);
+            }
+
+            @Override
+            public int hashCode() {
+                return isbn.hashCode();
+            }
+        }
+    - path: src/main/java/com/library/Member.java
+      content: |
+        package com.library;
+
+        import java.util.ArrayList;
+        import java.util.List;
+
+        public class Member {
+            private final String name;
+            private final List<Book> loans = new ArrayList<>();
+
+            public Member(String name) {
+                this.name = name;
+            }
+
+            public String getName() { return name; }
+
+            public List<Book> getLoans() {
+                return List.copyOf(loans);
+            }
+
+            void addLoan(Book book) {
+                loans.add(book);
+            }
+
+            void removeLoan(Book book) {
+                loans.remove(book);
+            }
+        }
+    - path: src/main/java/com/library/LoanService.java
+      content: |
+        package com.library;
+
+        import java.time.LocalDate;
+        import java.time.temporal.ChronoUnit;
+        import java.util.HashMap;
+        import java.util.Map;
+
+        public class LoanService {
+            public static final int MAX_LOANS = 3;
+            public static final int LOAN_DAYS = 14;
+            public static final int FEE_PER_DAY_CENTS = 25;
+
+            private final Map<String, LocalDate> dueDates = new HashMap<>();
+
+            public void borrow(Member member, Book book, LocalDate today) {
+                if (!book.isAvailable()) {
+                    throw new IllegalStateException("Book is already on loan");
+                }
+                if (member.getLoans().size() >= MAX_LOANS) {
+                    throw new IllegalStateException("Loan limit reached");
+                }
+                book.setAvailable(false);
+                member.addLoan(book);
+                dueDates.put(book.getIsbn(), today.plusDays(LOAN_DAYS));
+            }
+
+            /** Returns the late fee in cents. */
+            public int returnBook(Member member, Book book, LocalDate today) {
+                if (!member.getLoans().contains(book)) {
+                    throw new IllegalArgumentException("This member has not borrowed " + book.getIsbn());
+                }
+                member.removeLoan(book);
+                book.setAvailable(true);
+                LocalDate due = dueDates.remove(book.getIsbn());
+                long daysLate = Math.max(0, ChronoUnit.DAYS.between(due, today));
+                return (int) daysLate * FEE_PER_DAY_CENTS;
+            }
+        }
+
 - slug: java-checkout-service
   title: Checkout service
   language: java
@@ -325,6 +700,353 @@
                     total -= total * 10 / 100;
                 }
                 return total;
+            }
+        }
+
+- slug: java-sales-report
+  title: Sales report
+  language: java
+  difficulty: medium
+  tags: [floating-point, overflow, sorting, pagination, csv]
+  description: |
+    The reporting module behind a sales dashboard. The numbers looked right in the demo.
+
+    Intended behaviour:
+    - totalCents(sales): the sum of all amounts in cents, each amount rounded to the nearest cent.
+    - averageAmount(sales): the mean amount, and 0 for an empty list.
+    - totalQuantity(sales): the sum of all quantities. It can be larger than an int.
+    - topSales(sales, n): up to n sales with the largest amounts, biggest first. The list passed in is not modified.
+    - page(sales, page, size): one page of the list. Pages are numbered from 1, the last page may be shorter, and a page past the end is empty.
+    - toCsv(sales): a header line, then one line per sale. A customer name containing a comma or a double quote is wrapped in double quotes, with any quotes inside it doubled.
+
+    Hidden tests call the public constructors and methods of Sale and ReportService, so keep those signatures.
+  files:
+    - path: src/main/java/com/acme/report/Sale.java
+      content: |
+        package com.acme.report;
+
+        public class Sale {
+            private final String customer;
+            private final double amount;
+            private final int quantity;
+
+            public Sale(String customer, double amount, int quantity) {
+                this.customer = customer;
+                this.amount = amount;
+                this.quantity = quantity;
+            }
+
+            public String getCustomer() { return customer; }
+            public double getAmount() { return amount; }
+            public int getQuantity() { return quantity; }
+        }
+    - path: src/main/java/com/acme/report/ReportService.java
+      content: |
+        package com.acme.report;
+
+        import java.util.Collections;
+        import java.util.Comparator;
+        import java.util.List;
+        import java.util.Locale;
+
+        public class ReportService {
+
+            /** Total of all sale amounts, in cents. */
+            public long totalCents(List<Sale> sales) {
+                long cents = 0;
+                for (Sale s : sales) {
+                    cents += (long) (s.getAmount() * 100);
+                }
+                return cents;
+            }
+
+            public double averageAmount(List<Sale> sales) {
+                double sum = 0;
+                for (Sale s : sales) {
+                    sum += s.getAmount();
+                }
+                return sum / sales.size();
+            }
+
+            public long totalQuantity(List<Sale> sales) {
+                int total = 0;
+                for (Sale s : sales) {
+                    total += s.getQuantity();
+                }
+                return total;
+            }
+
+            /** The n largest sales, biggest first. */
+            public List<Sale> topSales(List<Sale> sales, int n) {
+                Comparator<Sale> biggestFirst = (a, b) -> (int) (b.getAmount() - a.getAmount());
+                Collections.sort(sales, biggestFirst);
+                return sales.subList(0, n);
+            }
+
+            /** One page of sales. Pages are numbered from 1. */
+            public List<Sale> page(List<Sale> sales, int page, int size) {
+                int from = page * size;
+                return sales.subList(from, from + size);
+            }
+
+            public String toCsv(List<Sale> sales) {
+                String csv = "customer,amount,quantity\n";
+                for (Sale s : sales) {
+                    csv += s.getCustomer() + "," + String.format(Locale.ROOT, "%.2f", s.getAmount()) + "," + s.getQuantity() + "\n";
+                }
+                return csv;
+            }
+        }
+  issues:
+    - id: 1
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 14
+      category: bug
+      title: Cents are truncated, not rounded
+      detail: >
+        Amounts are doubles, and most decimal fractions have no exact binary form: 0.29 * 100 is 28.999999999999996,
+        and the (long) cast cuts it to 28. Every such sale loses a cent. Use Math.round(amount * 100), and better,
+        stop holding money in double at all: store cents in a long or use BigDecimal.
+    - id: 2
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 24
+      category: bug
+      title: Average of an empty list is NaN
+      detail: >
+        With no sales, sum / sales.size() is 0.0 / 0, which is NaN in floating point (no exception is thrown).
+        NaN then spreads through every later calculation and prints as "NaN" on the dashboard. Return 0 when the
+        list is empty.
+    - id: 3
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 28
+      category: bug
+      title: Quantity total overflows int
+      detail: >
+        The method returns long but adds up in an int, so the sum silently wraps around past 2,147,483,647 before
+        it is widened. Declare the accumulator as long.
+    - id: 4
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 37
+      category: bug
+      title: Comparator casts the difference to int
+      detail: >
+        (int) (b - a) turns any difference smaller than 1 into 0, so 10.9 and 10.2 compare as equal and stay in
+        their original order; very large differences overflow the int as well. Use
+        Comparator.comparingDouble(Sale::getAmount).reversed() or Double.compare(b.getAmount(), a.getAmount()).
+    - id: 5
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 38
+      category: design
+      title: topSales() reorders the caller's list
+      detail: >
+        Collections.sort sorts the list that was passed in, so a call that looks like a query changes the order
+        the caller sees afterwards (and throws for an immutable list). subList also returns a view of that same
+        list. Sort a copy and return a new list.
+    - id: 6
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 44
+      category: bug
+      title: page() skips the first page
+      detail: >
+        Pages are numbered from 1, but from = page * size treats them as numbered from 0, so page 1 returns the
+        second page and the first page can never be requested. The start index is (page - 1) * size.
+    - id: 7
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 45
+      category: bug
+      title: subList end is not clamped to the list size
+      detail: >
+        from + size runs past the end on a short last page or a page beyond the data, and subList throws
+        IndexOutOfBoundsException. Clamp the end with Math.min(from + size, sales.size()) and return an empty list
+        when from is past the end. topSales() has the same problem when n is larger than the list.
+    - id: 8
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 51
+      category: bug
+      title: CSV fields are not escaped
+      detail: >
+        A customer called "Smith, John" produces a row with four columns, and a quote or line break in a name
+        breaks the file. Wrap a field in double quotes when it contains a comma, quote or line break, and double
+        any quotes inside it.
+    - id: 9
+      file: src/main/java/com/acme/report/ReportService.java
+      line: 51
+      category: performance
+      title: String concatenation in a loop
+      detail: >
+        csv += ... copies the whole string built so far on every iteration, which is quadratic in the number of
+        rows and slow for a large export. Append to a StringBuilder.
+  tests:
+    - path: RepoTests.java
+      content: |
+        import com.acme.report.*;
+        import java.util.ArrayList;
+        import java.util.List;
+
+        public class RepoTests {
+            interface Body { void run() throws Exception; }
+
+            static int failed = 0;
+            static final ReportService report = new ReportService();
+
+            public static void main(String[] args) {
+                test("totalCents() rounds each amount to the nearest cent", () -> {
+                    long cents = report.totalCents(sales(0.29, 1.15));
+                    check(cents == 144, "0.29 + 1.15: expected 144 but got " + cents);
+                });
+                test("averageAmount() is the mean", () -> {
+                    double avg = report.averageAmount(sales(10, 20));
+                    check(avg == 15.0, "expected 15.0 but got " + avg);
+                });
+                test("averageAmount() of no sales is 0", () -> {
+                    double avg = report.averageAmount(new ArrayList<>());
+                    check(avg == 0.0, "expected 0.0 but got " + avg);
+                });
+                test("totalQuantity() can exceed the int range", () -> {
+                    List<Sale> big = new ArrayList<>();
+                    big.add(new Sale("a", 1, 2_000_000_000));
+                    big.add(new Sale("b", 1, 2_000_000_000));
+                    long total = report.totalQuantity(big);
+                    check(total == 4_000_000_000L, "expected 4000000000 but got " + total);
+                });
+                test("topSales() orders by amount, including the cents", () -> {
+                    List<Sale> top = report.topSales(sales(10.2, 10.9, 10.5), 2);
+                    check(amounts(top).equals("10.9 10.5"), "expected 10.9 10.5 but got " + amounts(top));
+                });
+                test("topSales() leaves the caller's list unchanged", () -> {
+                    List<Sale> mine = sales(1, 30, 20);
+                    report.topSales(mine, 2);
+                    check(amounts(mine).equals("1.0 30.0 20.0"), "the list passed in is now " + amounts(mine));
+                });
+                test("topSales() with n larger than the list returns every sale", () -> {
+                    List<Sale> top = report.topSales(sales(1, 3, 2), 10);
+                    check(amounts(top).equals("3.0 2.0 1.0"), "expected 3.0 2.0 1.0 but got " + amounts(top));
+                });
+                test("page() numbers pages from 1", () -> {
+                    List<Sale> first = report.page(sales(1, 2, 3, 4, 5), 1, 2);
+                    check(amounts(first).equals("1.0 2.0"), "page 1 of size 2: expected 1.0 2.0 but got " + amounts(first));
+                });
+                test("page() returns a short last page and an empty page past the end", () -> {
+                    List<Sale> last = report.page(sales(1, 2, 3, 4, 5), 3, 2);
+                    check(amounts(last).equals("5.0"), "page 3 of size 2: expected 5.0 but got " + amounts(last));
+                    List<Sale> beyond = report.page(sales(1, 2, 3, 4, 5), 4, 2);
+                    check(beyond.isEmpty(), "page 4 of size 2 should be empty but has " + beyond.size() + " sales");
+                });
+                test("toCsv() writes a header and one line per sale", () -> {
+                    List<Sale> two = new ArrayList<>();
+                    two.add(new Sale("Bob", 1, 1));
+                    two.add(new Sale("Eve", 2.5, 3));
+                    String csv = report.toCsv(two);
+                    check(csv.equals("customer,amount,quantity\nBob,1.00,1\nEve,2.50,3\n"), "got " + show(csv));
+                });
+                test("toCsv() quotes names containing a comma or a quote", () -> {
+                    List<Sale> tricky = new ArrayList<>();
+                    tricky.add(new Sale("Smith, John", 10, 1));
+                    tricky.add(new Sale("Ann \"AJ\" Lee", 2.5, 3));
+                    String csv = report.toCsv(tricky);
+                    String expected = "customer,amount,quantity\n\"Smith, John\",10.00,1\n\"Ann \"\"AJ\"\" Lee\",2.50,3\n";
+                    check(csv.equals(expected), "expected " + show(expected) + " but got " + show(csv));
+                });
+                System.exit(failed == 0 ? 0 : 1);
+            }
+
+            static List<Sale> sales(double... amounts) {
+                List<Sale> list = new ArrayList<>();
+                for (double a : amounts) list.add(new Sale("c" + list.size(), a, 1));
+                return list;
+            }
+
+            static String amounts(List<Sale> sales) {
+                StringBuilder sb = new StringBuilder();
+                for (Sale s : sales) sb.append(sb.length() == 0 ? "" : " ").append(s.getAmount());
+                return sb.toString();
+            }
+
+            static String show(String s) {
+                return s.replace("\n", "\\n");
+            }
+
+            static void test(String name, Body body) {
+                try {
+                    body.run();
+                    System.out.println("PASS " + name);
+                } catch (Throwable t) {
+                    failed++;
+                    String why = t instanceof AssertionError && t.getMessage() != null ? t.getMessage() : t.toString();
+                    System.out.println("FAIL " + name + ": " + why.replace('\n', ' '));
+                }
+            }
+
+            static void check(boolean ok, String message) {
+                if (!ok) throw new AssertionError(message);
+            }
+        }
+  solution:
+    - path: src/main/java/com/acme/report/ReportService.java
+      content: |
+        package com.acme.report;
+
+        import java.util.ArrayList;
+        import java.util.Comparator;
+        import java.util.List;
+        import java.util.Locale;
+
+        public class ReportService {
+
+            /** Total of all sale amounts, in cents. */
+            public long totalCents(List<Sale> sales) {
+                long cents = 0;
+                for (Sale s : sales) {
+                    cents += Math.round(s.getAmount() * 100);
+                }
+                return cents;
+            }
+
+            public double averageAmount(List<Sale> sales) {
+                if (sales.isEmpty()) return 0;
+                double sum = 0;
+                for (Sale s : sales) {
+                    sum += s.getAmount();
+                }
+                return sum / sales.size();
+            }
+
+            public long totalQuantity(List<Sale> sales) {
+                long total = 0;
+                for (Sale s : sales) {
+                    total += s.getQuantity();
+                }
+                return total;
+            }
+
+            /** The n largest sales, biggest first. */
+            public List<Sale> topSales(List<Sale> sales, int n) {
+                List<Sale> sorted = new ArrayList<>(sales);
+                sorted.sort(Comparator.comparingDouble(Sale::getAmount).reversed());
+                return new ArrayList<>(sorted.subList(0, Math.max(0, Math.min(n, sorted.size()))));
+            }
+
+            /** One page of sales. Pages are numbered from 1. */
+            public List<Sale> page(List<Sale> sales, int page, int size) {
+                long from = (long) (page - 1) * size;
+                if (from < 0 || from >= sales.size()) return new ArrayList<>();
+                int to = (int) Math.min(from + size, sales.size());
+                return new ArrayList<>(sales.subList((int) from, to));
+            }
+
+            public String toCsv(List<Sale> sales) {
+                StringBuilder csv = new StringBuilder("customer,amount,quantity\n");
+                for (Sale s : sales) {
+                    csv.append(escape(s.getCustomer())).append(',')
+                            .append(String.format(Locale.ROOT, "%.2f", s.getAmount())).append(',')
+                            .append(s.getQuantity()).append('\n');
+                }
+                return csv.toString();
+            }
+
+            private static String escape(String field) {
+                if (!field.contains(",") && !field.contains("\"") && !field.contains("\n") && !field.contains("\r")) return field;
+                return "\"" + field.replace("\"", "\"\"") + "\"";
             }
         }
 
@@ -804,5 +1526,406 @@
 
             public UserRepository repository() {
                 return repo;
+            }
+        }
+
+- slug: java-ttl-cache
+  title: TTL cache
+  language: java
+  difficulty: hard
+  tags: [concurrency, caching, units, eviction]
+  description: |
+    An in-memory cache that sits in front of a slow pricing service. One instance is shared by every request thread.
+
+    Intended behaviour:
+    - new TtlCache(maxSize, ttlSeconds, clock): clock supplies the current time in milliseconds.
+    - get(key) returns the value, or null when the key is absent or older than ttlSeconds. An expired entry is removed when it is looked up.
+    - put(key, value) adds or replaces an entry. Adding a new key to a full cache first evicts the least recently used entry (the one whose last get or put is oldest). Replacing an existing key evicts nothing.
+    - getOrLoad(key, loader) returns the cached value, or calls the loader, stores the result and returns it. When several threads ask for the same missing key at once, the loader runs once.
+    - hitRate() is the fraction of get() lookups that found a live entry, and 0.0 before any lookup.
+
+    Hidden tests call the public constructor and methods of TtlCache, so keep those signatures.
+  files:
+    - path: src/main/java/com/acme/cache/CacheEntry.java
+      content: |
+        package com.acme.cache;
+
+        class CacheEntry<V> {
+            final V value;
+            final long createdAt;
+            long lastAccess;
+
+            CacheEntry(V value, long now) {
+                this.value = value;
+                this.createdAt = now;
+                this.lastAccess = now;
+            }
+        }
+    - path: src/main/java/com/acme/cache/TtlCache.java
+      content: |
+        package com.acme.cache;
+
+        import java.util.HashMap;
+        import java.util.Map;
+        import java.util.function.Function;
+        import java.util.function.LongSupplier;
+
+        public class TtlCache<K, V> {
+            private final Map<K, CacheEntry<V>> entries = new HashMap<>();
+            private final int maxSize;
+            private final long ttlSeconds;
+            private final LongSupplier clock;
+            private int hits;
+            private int misses;
+
+            public TtlCache(int maxSize, long ttlSeconds, LongSupplier clock) {
+                this.maxSize = maxSize;
+                this.ttlSeconds = ttlSeconds;
+                this.clock = clock;
+            }
+
+            public V get(K key) {
+                CacheEntry<V> entry = entries.get(key);
+                if (entry == null) {
+                    misses++;
+                    return null;
+                }
+                if (clock.getAsLong() - entry.createdAt > ttlSeconds) {
+                    misses++;
+                    return null;
+                }
+                hits++;
+                entry.lastAccess = clock.getAsLong();
+                return entry.value;
+            }
+
+            public void put(K key, V value) {
+                if (entries.size() >= maxSize) {
+                    evictOne();
+                }
+                entries.put(key, new CacheEntry<>(value, clock.getAsLong()));
+            }
+
+            public V getOrLoad(K key, Function<K, V> loader) {
+                V value = get(key);
+                if (value == null) {
+                    value = loader.apply(key);
+                    put(key, value);
+                }
+                return value;
+            }
+
+            private void evictOne() {
+                K victim = null;
+                long latest = Long.MIN_VALUE;
+                for (Map.Entry<K, CacheEntry<V>> e : entries.entrySet()) {
+                    if (e.getValue().lastAccess > latest) {
+                        latest = e.getValue().lastAccess;
+                        victim = e.getKey();
+                    }
+                }
+                entries.remove(victim);
+            }
+
+            public int size() {
+                return entries.size();
+            }
+
+            public double hitRate() {
+                return hits / (hits + misses);
+            }
+        }
+  issues:
+    - id: 1
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 9
+      category: concurrency
+      title: Shared state is not thread-safe
+      detail: >
+        The cache is shared by request threads but uses a plain HashMap and plain int counters. Concurrent puts can
+        lose entries or corrupt the map during a resize, and hits++ / misses++ lose updates. Guard every public
+        method with one lock (synchronized), or use ConcurrentHashMap with atomic counters and make the compound
+        operations atomic.
+    - id: 2
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 28
+      category: bug
+      title: TTL in seconds is compared with milliseconds
+      detail: >
+        The clock returns milliseconds but the age is compared directly with ttlSeconds, so a 60-second TTL expires
+        entries after 60 milliseconds. Compare against ttlSeconds * 1000 (or TimeUnit.SECONDS.toMillis), and put the
+        unit in the field name.
+    - id: 3
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 30
+      category: resource-leak
+      title: Expired entries are never removed
+      detail: >
+        An expired entry is reported as a miss but stays in the map. It still counts toward size() and maxSize, so
+        dead entries can push live ones out, and keys that are never written again are kept forever. Remove the entry
+        when it is found to be expired.
+    - id: 4
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 38
+      category: bug
+      title: Replacing an existing key evicts another entry
+      detail: >
+        put() evicts whenever the cache is full, even when the key is already present and the map will not grow.
+        Updating a value in a full cache therefore throws away an unrelated entry. Only evict when the key is new:
+        check !entries.containsKey(key) as well.
+    - id: 5
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 47
+      category: concurrency
+      title: getOrLoad() is a check-then-act race
+      detail: >
+        get, load and put are three separate steps. Threads that miss at the same moment all call the slow loader
+        for the same key (a cache stampede), and the last put wins. Make the whole operation atomic, for example by
+        synchronizing it or using ConcurrentHashMap.computeIfAbsent, ideally with per-key locking so one slow load
+        does not block other keys.
+    - id: 6
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 57
+      category: bug
+      title: Eviction removes the most recently used entry
+      detail: >
+        The loop keeps the entry with the largest lastAccess, which is the most recently used one, so the cache
+        throws away exactly the entries most likely to be needed again. Track the smallest lastAccess instead
+        (start from Long.MAX_VALUE and compare with <), or use an access-ordered LinkedHashMap.
+    - id: 7
+      file: src/main/java/com/acme/cache/TtlCache.java
+      line: 70
+      category: bug
+      title: hitRate() uses integer division
+      detail: >
+        hits / (hits + misses) divides two ints, so the result is 0 unless every lookup was a hit, and it throws
+        ArithmeticException before the first lookup. Return 0.0 when there were no lookups and otherwise cast to
+        double before dividing.
+  tests:
+    - path: RepoTests.java
+      content: |
+        import com.acme.cache.*;
+        import java.util.concurrent.CountDownLatch;
+        import java.util.concurrent.atomic.AtomicInteger;
+        import java.util.concurrent.atomic.AtomicLong;
+
+        public class RepoTests {
+            interface Body { void run() throws Exception; }
+
+            static int failed = 0;
+
+            public static void main(String[] args) {
+                test("An entry lives for the whole TTL, measured in seconds", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<String, String> cache = new TtlCache<>(10, 60, now::get);
+                    cache.put("a", "1");
+                    now.addAndGet(59_000);
+                    check("1".equals(cache.get("a")), "the entry was gone after 59 seconds of a 60 second TTL");
+                });
+                test("An entry expires after the TTL", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<String, String> cache = new TtlCache<>(10, 60, now::get);
+                    cache.put("a", "1");
+                    now.addAndGet(61_000);
+                    check(cache.get("a") == null, "the entry was still returned after 61 seconds");
+                });
+                test("An expired entry is removed when it is looked up", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<String, String> cache = new TtlCache<>(10, 60, now::get);
+                    cache.put("a", "1");
+                    now.addAndGet(61_000);
+                    cache.get("a");
+                    check(cache.size() == 0, "size() is still " + cache.size() + " after the expired entry was looked up");
+                });
+                test("A full cache evicts the least recently used entry", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<String, String> cache = new TtlCache<>(2, 3600, now::get);
+                    cache.put("a", "1");
+                    now.incrementAndGet();
+                    cache.put("b", "2");
+                    now.incrementAndGet();
+                    cache.get("a");
+                    now.incrementAndGet();
+                    cache.put("c", "3");
+                    check(cache.get("b") == null, "b was least recently used but is still cached");
+                    check(cache.get("a") != null && cache.get("c") != null, "a or c was evicted instead of b");
+                });
+                test("Replacing a key in a full cache evicts nothing", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<String, String> first = new TtlCache<>(2, 3600, now::get);
+                    first.put("a", "1");
+                    now.incrementAndGet();
+                    first.put("b", "2");
+                    now.incrementAndGet();
+                    first.put("a", "one");
+                    check(first.size() == 2 && first.get("b") != null, "replacing a evicted b");
+
+                    TtlCache<String, String> second = new TtlCache<>(2, 3600, now::get);
+                    second.put("a", "1");
+                    now.incrementAndGet();
+                    second.put("b", "2");
+                    now.incrementAndGet();
+                    second.get("a");
+                    now.incrementAndGet();
+                    second.put("a", "one");
+                    check(second.size() == 2 && second.get("b") != null, "replacing a (after reading it) evicted b");
+                    check("one".equals(second.get("a")), "a does not hold the new value");
+                });
+                test("hitRate() is hits divided by lookups", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<String, String> cache = new TtlCache<>(10, 3600, now::get);
+                    check(cache.hitRate() == 0.0, "expected 0.0 before any lookup but got " + cache.hitRate());
+                    cache.put("a", "1");
+                    cache.get("a");
+                    cache.get("a");
+                    cache.get("a");
+                    cache.get("missing");
+                    check(Math.abs(cache.hitRate() - 0.75) < 1e-9, "3 hits and 1 miss: expected 0.75 but got " + cache.hitRate());
+                });
+                test("getOrLoad() returns the cached value on the second call", () -> {
+                    AtomicLong now = new AtomicLong();
+                    AtomicInteger loads = new AtomicInteger();
+                    TtlCache<String, String> cache = new TtlCache<>(10, 3600, now::get);
+                    cache.getOrLoad("a", k -> "v" + loads.incrementAndGet());
+                    String again = cache.getOrLoad("a", k -> "v" + loads.incrementAndGet());
+                    check("v1".equals(again) && loads.get() == 1, "the loader ran " + loads.get() + " times");
+                });
+                test("getOrLoad() runs the loader once when threads race for the same key", () -> {
+                    AtomicLong now = new AtomicLong();
+                    AtomicInteger loads = new AtomicInteger();
+                    TtlCache<String, String> cache = new TtlCache<>(10, 3600, now::get);
+                    CountDownLatch start = new CountDownLatch(1);
+                    Thread[] threads = new Thread[6];
+                    for (int i = 0; i < threads.length; i++) {
+                        threads[i] = new Thread(() -> {
+                            try {
+                                start.await();
+                            } catch (InterruptedException e) {
+                                return;
+                            }
+                            cache.getOrLoad("price", k -> {
+                                loads.incrementAndGet();
+                                try {
+                                    Thread.sleep(100);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                                return "42";
+                            });
+                        });
+                        threads[i].start();
+                    }
+                    start.countDown();
+                    for (Thread t : threads) t.join();
+                    check(loads.get() == 1, "the loader ran " + loads.get() + " times for one key");
+                });
+                test("Concurrent puts lose no entries", () -> {
+                    AtomicLong now = new AtomicLong();
+                    TtlCache<Integer, Integer> cache = new TtlCache<>(1_000_000, 3600, now::get);
+                    Thread[] threads = new Thread[4];
+                    for (int i = 0; i < threads.length; i++) {
+                        int base = i * 100_000;
+                        threads[i] = new Thread(() -> {
+                            for (int j = 0; j < 20_000; j++) cache.put(base + j, j);
+                        });
+                        threads[i].start();
+                    }
+                    for (Thread t : threads) t.join();
+                    check(cache.size() == 80_000, "expected 80000 entries but size() is " + cache.size());
+                });
+                System.exit(failed == 0 ? 0 : 1);
+            }
+
+            static void test(String name, Body body) {
+                try {
+                    body.run();
+                    System.out.println("PASS " + name);
+                } catch (Throwable t) {
+                    failed++;
+                    String why = t instanceof AssertionError && t.getMessage() != null ? t.getMessage() : t.toString();
+                    System.out.println("FAIL " + name + ": " + why.replace('\n', ' '));
+                }
+            }
+
+            static void check(boolean ok, String message) {
+                if (!ok) throw new AssertionError(message);
+            }
+        }
+  solution:
+    - path: src/main/java/com/acme/cache/TtlCache.java
+      content: |
+        package com.acme.cache;
+
+        import java.util.HashMap;
+        import java.util.Map;
+        import java.util.function.Function;
+        import java.util.function.LongSupplier;
+
+        /** Every public method holds the cache's lock, so compound operations such as getOrLoad are atomic. */
+        public class TtlCache<K, V> {
+            private final Map<K, CacheEntry<V>> entries = new HashMap<>();
+            private final int maxSize;
+            private final long ttlMillis;
+            private final LongSupplier clock;
+            private long hits;
+            private long misses;
+
+            public TtlCache(int maxSize, long ttlSeconds, LongSupplier clock) {
+                this.maxSize = maxSize;
+                this.ttlMillis = ttlSeconds * 1000;
+                this.clock = clock;
+            }
+
+            public synchronized V get(K key) {
+                long now = clock.getAsLong();
+                CacheEntry<V> entry = entries.get(key);
+                if (entry != null && now - entry.createdAt > ttlMillis) {
+                    entries.remove(key);
+                    entry = null;
+                }
+                if (entry == null) {
+                    misses++;
+                    return null;
+                }
+                hits++;
+                entry.lastAccess = now;
+                return entry.value;
+            }
+
+            public synchronized void put(K key, V value) {
+                if (!entries.containsKey(key) && entries.size() >= maxSize) {
+                    evictOne();
+                }
+                entries.put(key, new CacheEntry<>(value, clock.getAsLong()));
+            }
+
+            public synchronized V getOrLoad(K key, Function<K, V> loader) {
+                V value = get(key);
+                if (value == null) {
+                    value = loader.apply(key);
+                    put(key, value);
+                }
+                return value;
+            }
+
+            private void evictOne() {
+                K victim = null;
+                long oldest = Long.MAX_VALUE;
+                for (Map.Entry<K, CacheEntry<V>> e : entries.entrySet()) {
+                    if (e.getValue().lastAccess < oldest) {
+                        oldest = e.getValue().lastAccess;
+                        victim = e.getKey();
+                    }
+                }
+                entries.remove(victim);
+            }
+
+            public synchronized int size() {
+                return entries.size();
+            }
+
+            public synchronized double hitRate() {
+                long lookups = hits + misses;
+                return lookups == 0 ? 0.0 : (double) hits / lookups;
             }
         }
