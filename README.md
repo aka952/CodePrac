@@ -42,6 +42,10 @@ cd backend && mvn spring-boot:run          # H2 file DB in ./data, uses your loc
 cd frontend && npm install && npm run dev  # http://localhost:5173, proxies /api to :8080
 ```
 
+## Deploying
+
+Single-VM production setup (Caddy, gVisor sandbox, backups) for Oracle Cloud: see [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md).
+
 ## API
 
 All endpoints need an `X-User-Id: <uuid>` header (the frontend generates one in localStorage; real auth is phase 2).
