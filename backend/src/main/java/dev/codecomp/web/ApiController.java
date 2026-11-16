@@ -90,6 +90,11 @@ class ApiController {
         return repos.review(user, slug, req.review());
     }
 
+    @PostMapping("/repos/{slug}/reveal")
+    RepoView reveal(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
+        return repos.reveal(user, slug);
+    }
+
     @PostMapping("/repos/{slug}/test-runs")
     TestRunResult testRun(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug, @Valid @RequestBody TestRunRequest req) {
         return repos.runTests(user, slug, req.files());

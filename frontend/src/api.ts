@@ -70,7 +70,7 @@ export interface RepoSummary {
 export interface RepoView extends Omit<RepoSummary, 'files' | 'issues' | 'status'> {
   description: string
   files: RepoFile[]
-  reviewed: boolean
+  revealed: boolean
   issues: RepoIssue[] | null
 }
 
@@ -142,6 +142,7 @@ export const api = {
   repo: (slug: string) => request<RepoView>(`/repos/${encodeURIComponent(slug)}`),
   review: (slug: string, review: string) =>
     request<ReviewResult>(`/repos/${encodeURIComponent(slug)}/reviews`, { method: 'POST', body: JSON.stringify({ review }) }),
+  reveal: (slug: string) => request<RepoView>(`/repos/${encodeURIComponent(slug)}/reveal`, { method: 'POST' }),
   testRun: (slug: string, files: Record<string, string>) =>
     request<TestRunResult>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) }),
 }

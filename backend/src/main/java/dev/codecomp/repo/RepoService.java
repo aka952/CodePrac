@@ -75,9 +75,20 @@ public class RepoService {
     public RepoView get(UUID user, String slug) {
         var r = find(slug);
         var c = content(r);
-        boolean reviewed = submissions.existsByUserIdAndRepoExerciseIdAndKind(user, r.getId(), Kind.REVIEW);
+        boolean revealed = revealed(user, r);
         return new RepoView(r.getSlug(), r.getTitle(), r.getLanguage(), r.getDifficulty(), r.getTags(), r.getDescription(),
-                c.files(), reviewed, reviewed ? c.issues() : null);
+                c.files(), revealed, revealed ? c.issues() : null);
+    }
+
+    /** Reveals the planted issues and unlocks fixing without a graded review. */
+    public RepoView reveal(UUID user, String slug) {
+        var r = find(slug);
+        if (!revealed(user, r)) submissions.save(new RepoSubmission(user, r.getId(), Kind.SKIP, 0, content(r).issues().size()));
+        return get(user, slug);
+    }
+
+    private boolean revealed(UUID user, RepoExercise r) {
+        return submissions.existsByUserIdAndRepoExerciseIdAndKindIn(user, r.getId(), List.of(Kind.REVIEW, Kind.SKIP));
     }
 
     public ReviewResult review(UUID user, String slug, String review) {

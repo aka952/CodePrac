@@ -5,12 +5,13 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
 public interface RepoSubmissionRepository extends JpaRepository<RepoSubmission, Long> {
 
-    boolean existsByUserIdAndRepoExerciseIdAndKind(UUID userId, Long repoExerciseId, Kind kind);
+    boolean existsByUserIdAndRepoExerciseIdAndKindIn(UUID userId, Long repoExerciseId, Collection<Kind> kinds);
 
     @Query("select distinct s.repoExerciseId from RepoSubmission s where s.userId = :userId")
     List<Long> attemptedIds(@Param("userId") UUID userId);

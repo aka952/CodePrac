@@ -30,7 +30,7 @@ docker compose up --build
 
 Open http://localhost:3000.
 
-Repo review grading calls the Claude API. Export `ANTHROPIC_API_KEY` before `docker compose up` to enable it; without a key everything else works and `POST /api/repos/{slug}/reviews` returns `503`.
+Repo review grading calls the Claude API. Export `ANTHROPIC_API_KEY` before `docker compose up` to enable it; without a key everything else works: reviews return `503` and users can skip straight to fixing.
 
 On startup the backend seeds exercises from `backend/src/main/resources/exercises/*.yml`, pulls the sandbox images, and **pre-runs every exercise**. That warms the cache and logs a WARN if any `predict_output` answer doesn't match real output.
 
@@ -53,7 +53,8 @@ All endpoints need an `X-User-Id: <uuid>` header (the frontend generates one in 
 | POST | `/api/runs` | `{language, code}` | `429` + `Retry-After` when rate limited, `503` when all slots busy |
 | GET | `/api/languages` | | configured sandbox languages |
 | GET | `/api/repos` | | repo exercise summaries + status (`SOLVED` = all hidden tests passed) |
-| GET | `/api/repos/{slug}` | | project files + task; `issues` only after the user has submitted a review |
+| GET | `/api/repos/{slug}` | | project files + task; `issues` only once revealed (graded review or skip) |
+| POST | `/api/repos/{slug}/reveal` | | skip the review: reveal the issues and unlock fixing, no AI call |
 | POST | `/api/repos/{slug}/reviews` | `{review}` | Claude grades the review against the planted issues; reveals them. Counts toward the run rate limit |
 | POST | `/api/repos/{slug}/test-runs` | `{files: {path: content}}` | edited files only; compiled with the hidden tests in the sandbox |
 

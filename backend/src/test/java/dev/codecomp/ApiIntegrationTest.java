@@ -42,6 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ApiIntegrationTest {
 
     static final AtomicInteger sandboxCalls = new AtomicInteger();
+    static final AtomicInteger graderCalls = new AtomicInteger();
 
     @TestConfiguration
     static class FakeSandbox {
@@ -64,8 +65,10 @@ class ApiIntegrationTest {
         @Bean
         @Primary
         ReviewGrader fakeGrader() {
-            return (exercise, content, review) -> new ReviewGrade(
-                    List.of(new IssueVerdict(1, true, true, "spot on")), List.of(), "Good start.");
+            return (exercise, content, review) -> {
+                graderCalls.incrementAndGet();
+                return new ReviewGrade(List.of(new IssueVerdict(1, true, true, "spot on")), List.of(), "Good start.");
+            };
         }
     }
 
@@ -157,7 +160,7 @@ class ApiIntegrationTest {
                 .andExpect(jsonPath("$[*].status", everyItem(is("NEW"))));
         mvc.perform(get("/api/repos/java-checkout-service").header("X-User-Id", user))
                 .andExpect(jsonPath("$.files.length()", is(4)))
-                .andExpect(jsonPath("$.reviewed", is(false)))
+                .andExpect(jsonPath("$.revealed", is(false)))
                 .andExpect(jsonPath("$.issues", nullValue()))
                 .andExpect(jsonPath("$.tests").doesNotExist())
                 .andExpect(jsonPath("$.solution").doesNotExist());
@@ -172,10 +175,23 @@ class ApiIntegrationTest {
                 .andExpect(jsonPath("$.issues[1].found", is(false)));
 
         mvc.perform(get("/api/repos/java-checkout-service").header("X-User-Id", user))
-                .andExpect(jsonPath("$.reviewed", is(true)))
+                .andExpect(jsonPath("$.revealed", is(true)))
                 .andExpect(jsonPath("$.issues.length()", is(7)));
         mvc.perform(get("/api/repos").header("X-User-Id", user))
                 .andExpect(jsonPath("$[0].status", is("ATTEMPTED")));
+    }
+
+    @Test
+    void skippingTheReviewRevealsIssuesWithoutGrading() throws Exception {
+        int before = graderCalls.get();
+        json("/api/repos/java-user-registry/reveal", "")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.revealed", is(true)))
+                .andExpect(jsonPath("$.issues.length()", is(10)));
+        mvc.perform(get("/api/repos/java-user-registry").header("X-User-Id", user))
+                .andExpect(jsonPath("$.revealed", is(true)))
+                .andExpect(jsonPath("$.issues.length()", is(10)));
+        org.assertj.core.api.Assertions.assertThat(graderCalls.get()).isEqualTo(before);
     }
 
     @Test

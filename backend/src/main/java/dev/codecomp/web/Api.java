@@ -39,9 +39,9 @@ public interface Api {
     record RepoSummary(String slug, String title, String language, Difficulty difficulty, List<String> tags, int files, int issues,
                        String status) {}
 
-    /** {@code issues} is only present once the user has submitted a review. */
+    /** {@code issues} is only present once revealed: after a graded review, or when the user skips the review. */
     record RepoView(String slug, String title, String language, Difficulty difficulty, List<String> tags, String description,
-                    List<RepoFile> files, boolean reviewed, List<Issue> issues) {}
+                    List<RepoFile> files, boolean revealed, List<Issue> issues) {}
 
     record ReviewRequest(@NotBlank @Size(max = 10000) String review) {}
 

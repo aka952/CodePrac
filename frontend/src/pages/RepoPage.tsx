@@ -71,6 +71,20 @@ export default function RepoPage() {
     }
   }
 
+  const skipReview = async () => {
+    if (grading) return
+    setGrading(true)
+    setReviewError(null)
+    try {
+      setRepo(await api.reveal(slug))
+      setFocus(null)
+    } catch (e) {
+      setReviewError((e as Error).message)
+    } finally {
+      setGrading(false)
+    }
+  }
+
   const runTests = async () => {
     if (testing) return
     setTesting(true)
@@ -161,10 +175,13 @@ export default function RepoPage() {
                   <button className="primary" type="submit" disabled={grading || !review.trim()}>
                     {grading ? 'Grading…' : 'Submit review'}
                   </button>
-                  <span className="muted small">{review.length} / 10000</span>
+                  <button type="button" className="link" onClick={skipReview} disabled={grading}>Skip review</button>
                 </div>
                 {reviewError && <p className="error">{reviewError}</p>}
-                <p className="muted small">After grading, every planted issue is revealed and the code becomes editable.</p>
+                <p className="muted small">
+                  After grading, every planted issue is revealed and the code becomes editable.
+                  Skipping reveals them without a grade. {review.length} / 10000
+                </p>
               </form>
             )}
 
@@ -172,7 +189,7 @@ export default function RepoPage() {
 
             {!result && repo.issues && (
               <>
-                <p className="verdict revealed">You reviewed this earlier. Planted issues:</p>
+                <p className="verdict revealed">Planted issues</p>
                 <IssueList items={repo.issues.map(issue => ({ issue }))} onOpen={open} />
               </>
             )}

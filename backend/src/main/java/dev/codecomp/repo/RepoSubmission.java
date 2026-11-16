@@ -16,7 +16,8 @@ import java.util.UUID;
 @Table(name = "repo_submissions")
 public class RepoSubmission {
 
-    public enum Kind { REVIEW, FIX }
+    /** SKIP: the user revealed the issues without a graded review. */
+    public enum Kind { REVIEW, SKIP, FIX }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
