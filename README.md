@@ -4,6 +4,7 @@ Read a snippet, **commit to a prediction**, get graded, then **edit and run the 
 
 - 3 exercise types: **predict the output**, **trace a variable**, **spot the bug** (click the line)
 - **Repo reviews**: a small multi-file Java project full of planted problems. Write a free-text review (graded by Claude against the planted issues), then fix the code until the hidden tests pass
+- Repo workspace: statement and file-tree tabs, editor tabs, edits and review draft saved in the browser, a history of previous test runs, and **Ask AI** for syntax-only questions (5 per exercise; the assistant never sees the exercise)
 - 30 seed exercises (16 Java, 14 Python), every expected answer verified by real execution
 - Code runs in throwaway Docker containers: no network, read-only FS, non-root, CPU/memory/PID/time/output limits
 - Results cached by `sha256(language + code)`, so unchanged exercise code never hits the sandbox twice
@@ -57,6 +58,8 @@ All endpoints need an `X-User-Id: <uuid>` header (the frontend generates one in 
 | POST | `/api/repos/{slug}/reveal` | | skip the review: reveal the issues and unlock fixing, no AI call |
 | POST | `/api/repos/{slug}/reviews` | `{review}` | Claude grades the review against the planted issues; reveals them. Counts toward the run rate limit |
 | POST | `/api/repos/{slug}/test-runs` | `{files: {path: content}}` | edited files only; compiled with the hidden tests in the sandbox |
+| GET | `/api/repos/{slug}/test-runs` | | the user's last 20 test runs for this exercise, newest first, with per-test results |
+| POST | `/api/repos/{slug}/questions` | `{question}` | Ask AI: general language questions only. `429` once the 5 questions for this exercise are used; needs `ANTHROPIC_API_KEY` |
 
 ## Adding exercises
 
@@ -142,8 +145,9 @@ cd backend && mvn test
 | `SANDBOX_MAX_CONCURRENT` | `4` |
 | `RUNS_PER_MINUTE` | `20` per user |
 | `WARM_ON_STARTUP` | `true` |
-| `ANTHROPIC_API_KEY` | unset (repo review grading disabled) |
+| `ANTHROPIC_API_KEY` | unset (review grading and Ask AI disabled) |
 | `REVIEW_MODEL` | `claude-opus-5-5` |
+| `ASSISTANT_MODEL` | `claude-opus-5-5` (Ask AI) |
 
 Limits (memory, pids, timeouts, output cap) live in `application.yml` under `sandbox:`.
 

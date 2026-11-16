@@ -6,7 +6,6 @@ type MonacoEditor = Parameters<OnMount>[0]
 type Monaco = Parameters<OnMount>[1]
 
 interface Props {
-  path?: string
   language: string
   value: string
   readOnly: boolean
@@ -18,7 +17,7 @@ interface Props {
   onRun?: () => void
 }
 
-export default function CodeEditor({ path, language, value, readOnly, onChange, selectableLines, selectedLine, answerLine, onSelectLine, onRun }: Props) {
+export default function CodeEditor({ language, value, readOnly, onChange, selectableLines, selectedLine, answerLine, onSelectLine, onRun }: Props) {
   const editorRef = useRef<MonacoEditor | null>(null)
   const monacoRef = useRef<Monaco | null>(null)
   const decorations = useRef<ReturnType<MonacoEditor['createDecorationsCollection']> | null>(null)
@@ -51,7 +50,7 @@ export default function CodeEditor({ path, language, value, readOnly, onChange, 
     if (answerLine) editorRef.current?.revealLineInCenterIfOutsideViewport(answerLine)
   }
 
-  useEffect(paint, [selectedLine, answerLine, path])
+  useEffect(paint, [selectedLine, answerLine])
 
   const lines = value.split('\n').length
   const height = Math.min(Math.max(lines * 21 + 24, 160), 640)
@@ -60,7 +59,6 @@ export default function CodeEditor({ path, language, value, readOnly, onChange, 
     <div className={`editor-wrap${selectableLines ? ' selectable' : ''}${readOnly ? ' readonly' : ''}`}>
       <Editor
         height={height}
-        path={path}
         language={language}
         value={value}
         theme="vs-dark"

@@ -16,8 +16,8 @@ import java.util.UUID;
 @Table(name = "repo_submissions")
 public class RepoSubmission {
 
-    /** SKIP: the user revealed the issues without a graded review. */
-    public enum Kind { REVIEW, SKIP, FIX }
+    /** SKIP: the user revealed the issues without a graded review. ASK: one Ask AI question (counts toward the quota only). */
+    public enum Kind { REVIEW, SKIP, FIX, ASK }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -33,6 +33,7 @@ public class RepoSubmission {
     private int maxScore;
     @Column(name = "created_at")
     private Instant createdAt;
+    private String detail;
 
     protected RepoSubmission() {}
 
@@ -44,4 +45,15 @@ public class RepoSubmission {
         this.maxScore = maxScore;
         this.createdAt = Instant.now();
     }
+
+    RepoSubmission(UUID userId, Long repoExerciseId, Kind kind, int score, int maxScore, String detail) {
+        this(userId, repoExerciseId, kind, score, maxScore);
+        this.detail = detail;
+    }
+
+    public Long getId() { return id; }
+    public int getScore() { return score; }
+    public int getMaxScore() { return maxScore; }
+    public Instant getCreatedAt() { return createdAt; }
+    public String getDetail() { return detail; }
 }

@@ -3,6 +3,7 @@ package dev.codecomp;
 import dev.codecomp.repo.ReviewGrader;
 import dev.codecomp.repo.ReviewGrader.IssueVerdict;
 import dev.codecomp.repo.ReviewGrader.ReviewGrade;
+import dev.codecomp.repo.SyntaxAssistant;
 import dev.codecomp.sandbox.RunResult;
 import dev.codecomp.sandbox.RunResult.RunStatus;
 import dev.codecomp.sandbox.Sandbox;
@@ -43,6 +44,7 @@ class ApiIntegrationTest {
 
     static final AtomicInteger sandboxCalls = new AtomicInteger();
     static final AtomicInteger graderCalls = new AtomicInteger();
+    static final AtomicInteger assistantCalls = new AtomicInteger();
 
     @TestConfiguration
     static class FakeSandbox {
@@ -68,6 +70,15 @@ class ApiIntegrationTest {
             return (exercise, content, review) -> {
                 graderCalls.incrementAndGet();
                 return new ReviewGrade(List.of(new IssueVerdict(1, true, true, "spot on")), List.of(), "Good start.");
+            };
+        }
+
+        @Bean
+        @Primary
+        SyntaxAssistant fakeAssistant() {
+            return (language, question) -> {
+                assistantCalls.incrementAndGet();
+                return "about " + language + ": " + question;
             };
         }
     }
@@ -206,9 +217,47 @@ class ApiIntegrationTest {
     }
 
     @Test
+    void testRunsAreKeptAsHistoryNewestFirst() throws Exception {
+        mvc.perform(get("/api/repos/java-user-registry/test-runs").header("X-User-Id", user))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()", is(0)));
+        json("/api/repos/java-user-registry/test-runs", "{\"files\":{}}").andExpect(status().isOk());
+        mvc.perform(get("/api/repos/java-user-registry/test-runs").header("X-User-Id", user))
+                .andExpect(jsonPath("$.length()", is(1)))
+                .andExpect(jsonPath("$[0].passed", is(1)))
+                .andExpect(jsonPath("$[0].total", is(2)))
+                .andExpect(jsonPath("$[0].allPassed", is(false)))
+                .andExpect(jsonPath("$[0].createdAt", notNullValue()))
+                .andExpect(jsonPath("$[0].tests[1].message", is("expected 1 but got 2")));
+        mvc.perform(get("/api/repos/java-user-registry/test-runs").header("X-User-Id", UUID.randomUUID().toString()))
+                .andExpect(jsonPath("$.length()", is(0)));
+    }
+
+    @Test
+    void askAiAnswersUntilTheQuotaRunsOut() throws Exception {
+        mvc.perform(get("/api/repos/java-user-registry").header("X-User-Id", user))
+                .andExpect(jsonPath("$.questionsLeft", is(5)));
+        json("/api/repos/java-user-registry/questions", "{\"question\":\"what is a record\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answer", is("about java: what is a record")))
+                .andExpect(jsonPath("$.questionsLeft", is(4)));
+        for (int i = 0; i < 4; i++) json("/api/repos/java-user-registry/questions", "{\"question\":\"q\"}").andExpect(status().isOk());
+        int calls = assistantCalls.get();
+        json("/api/repos/java-user-registry/questions", "{\"question\":\"one more\"}").andExpect(status().isTooManyRequests());
+        org.assertj.core.api.Assertions.assertThat(assistantCalls.get()).isEqualTo(calls);
+        mvc.perform(get("/api/repos/java-user-registry").header("X-User-Id", user))
+                .andExpect(jsonPath("$.questionsLeft", is(0)));
+        // asking questions is not an attempt, and the quota is per exercise
+        mvc.perform(get("/api/repos").header("X-User-Id", user)).andExpect(jsonPath("$[1].status", is("NEW")));
+        mvc.perform(get("/api/repos/java-checkout-service").header("X-User-Id", user))
+                .andExpect(jsonPath("$.questionsLeft", is(5)));
+    }
+
+    @Test
     void repoEndpointsRejectBadInput() throws Exception {
         json("/api/repos/java-checkout-service/test-runs", "{\"files\":{\"Evil.java\":\"x\"}}").andExpect(status().isBadRequest());
         json("/api/repos/java-checkout-service/reviews", "{\"review\":\" \"}").andExpect(status().isBadRequest());
+        json("/api/repos/java-checkout-service/questions", "{\"question\":\" \"}").andExpect(status().isBadRequest());
         mvc.perform(get("/api/repos/nope").header("X-User-Id", user)).andExpect(status().isNotFound());
     }
 }

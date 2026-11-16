@@ -19,6 +19,7 @@ app:
   runs-per-minute: ${RUNS_PER_MINUTE:20}
   warm-on-startup: ${WARM_ON_STARTUP:true}
   review.model: ${REVIEW_MODEL:claude-opus-5-5}
+  assistant.model: ${ASSISTANT_MODEL:claude-opus-5-5}
 
 sandbox:
   docker: ${DOCKER_BIN:docker}

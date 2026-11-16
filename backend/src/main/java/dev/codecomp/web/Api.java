@@ -11,6 +11,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -41,7 +42,7 @@ public interface Api {
 
     /** {@code issues} is only present once revealed: after a graded review, or when the user skips the review. */
     record RepoView(String slug, String title, String language, Difficulty difficulty, List<String> tags, String description,
-                    List<RepoFile> files, boolean revealed, List<Issue> issues) {}
+                    List<RepoFile> files, boolean revealed, List<Issue> issues, int questionsLeft) {}
 
     record ReviewRequest(@NotBlank @Size(max = 10000) String review) {}
 
@@ -55,4 +56,10 @@ public interface Api {
     record TestCase(String name, boolean passed, String message) {}
 
     record TestRunResult(List<TestCase> tests, int passed, int total, boolean allPassed, RunResponse run) {}
+
+    record TestRunSummary(long id, Instant createdAt, int passed, int total, boolean allPassed, List<TestCase> tests) {}
+
+    record QuestionRequest(@NotBlank @Size(max = 1000) String question) {}
+
+    record QuestionAnswer(String answer, int questionsLeft) {}
 }

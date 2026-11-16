@@ -9,6 +9,8 @@ import dev.codecomp.web.Api.AttemptRequest;
 import dev.codecomp.web.Api.AttemptResult;
 import dev.codecomp.web.Api.ExerciseSummary;
 import dev.codecomp.web.Api.ExerciseView;
+import dev.codecomp.web.Api.QuestionAnswer;
+import dev.codecomp.web.Api.QuestionRequest;
 import dev.codecomp.web.Api.RepoSummary;
 import dev.codecomp.web.Api.RepoView;
 import dev.codecomp.web.Api.ReviewRequest;
@@ -17,6 +19,7 @@ import dev.codecomp.web.Api.RunRequest;
 import dev.codecomp.web.Api.RunResponse;
 import dev.codecomp.web.Api.TestRunRequest;
 import dev.codecomp.web.Api.TestRunResult;
+import dev.codecomp.web.Api.TestRunSummary;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -93,6 +96,16 @@ class ApiController {
     @PostMapping("/repos/{slug}/reveal")
     RepoView reveal(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
         return repos.reveal(user, slug);
+    }
+
+    @GetMapping("/repos/{slug}/test-runs")
+    List<TestRunSummary> testRuns(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
+        return repos.testRuns(user, slug);
+    }
+
+    @PostMapping("/repos/{slug}/questions")
+    QuestionAnswer ask(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug, @Valid @RequestBody QuestionRequest req) {
+        return repos.ask(user, slug, req.question());
     }
 
     @PostMapping("/repos/{slug}/test-runs")

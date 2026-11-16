@@ -13,7 +13,11 @@ public interface RepoSubmissionRepository extends JpaRepository<RepoSubmission, 
 
     boolean existsByUserIdAndRepoExerciseIdAndKindIn(UUID userId, Long repoExerciseId, Collection<Kind> kinds);
 
-    @Query("select distinct s.repoExerciseId from RepoSubmission s where s.userId = :userId")
+    long countByUserIdAndRepoExerciseIdAndKind(UUID userId, Long repoExerciseId, Kind kind);
+
+    List<RepoSubmission> findTop20ByUserIdAndRepoExerciseIdAndKindOrderByIdDesc(UUID userId, Long repoExerciseId, Kind kind);
+
+    @Query("select distinct s.repoExerciseId from RepoSubmission s where s.userId = :userId and s.kind <> dev.codecomp.repo.RepoSubmission.Kind.ASK")
     List<Long> attemptedIds(@Param("userId") UUID userId);
 
     @Query("select distinct s.repoExerciseId from RepoSubmission s where s.userId = :userId and s.kind = dev.codecomp.repo.RepoSubmission.Kind.FIX and s.maxScore > 0 and s.score = s.maxScore")

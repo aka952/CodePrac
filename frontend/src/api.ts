@@ -72,6 +72,7 @@ export interface RepoView extends Omit<RepoSummary, 'files' | 'issues' | 'status
   files: RepoFile[]
   revealed: boolean
   issues: RepoIssue[] | null
+  questionsLeft: number
 }
 
 export interface IssueOutcome {
@@ -90,12 +91,32 @@ export interface ReviewResult {
   overallFeedback: string
 }
 
+export interface TestCase {
+  name: string
+  passed: boolean
+  message: string | null
+}
+
 export interface TestRunResult {
-  tests: { name: string; passed: boolean; message: string | null }[]
+  tests: TestCase[]
   passed: number
   total: number
   allPassed: boolean
   run: RunResponse
+}
+
+export interface TestRunSummary {
+  id: number
+  createdAt: string
+  passed: number
+  total: number
+  allPassed: boolean
+  tests: TestCase[]
+}
+
+export interface QuestionAnswer {
+  answer: string
+  questionsLeft: number
 }
 
 export class ApiError extends Error {
@@ -143,6 +164,9 @@ export const api = {
   review: (slug: string, review: string) =>
     request<ReviewResult>(`/repos/${encodeURIComponent(slug)}/reviews`, { method: 'POST', body: JSON.stringify({ review }) }),
   reveal: (slug: string) => request<RepoView>(`/repos/${encodeURIComponent(slug)}/reveal`, { method: 'POST' }),
+  testRuns: (slug: string) => request<TestRunSummary[]>(`/repos/${encodeURIComponent(slug)}/test-runs`),
+  ask: (slug: string, question: string) =>
+    request<QuestionAnswer>(`/repos/${encodeURIComponent(slug)}/questions`, { method: 'POST', body: JSON.stringify({ question }) }),
   testRun: (slug: string, files: Record<string, string>) =>
     request<TestRunResult>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) }),
 }

@@ -1,6 +1,7 @@
 package dev.codecomp.repo;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.codecomp.repo.RepoContent.RepoFile;
 import dev.codecomp.repo.RepoSubmission.Kind;
@@ -8,12 +9,14 @@ import dev.codecomp.run.RateLimiter;
 import dev.codecomp.run.RunService;
 import dev.codecomp.sandbox.RunResult;
 import dev.codecomp.web.Api.IssueOutcome;
+import dev.codecomp.web.Api.QuestionAnswer;
 import dev.codecomp.web.Api.RepoSummary;
 import dev.codecomp.web.Api.RepoView;
 import dev.codecomp.web.Api.ReviewResult;
 import dev.codecomp.web.Api.RunResponse;
 import dev.codecomp.web.Api.TestCase;
 import dev.codecomp.web.Api.TestRunResult;
+import dev.codecomp.web.Api.TestRunSummary;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -44,21 +47,25 @@ public class RepoService {
     private static final Logger log = LoggerFactory.getLogger(RepoService.class);
     private static final Pattern PASS = Pattern.compile("^PASS (.+)$");
     private static final Pattern FAIL = Pattern.compile("^FAIL (.+?): (.*)$");
+    static final int QUESTIONS_PER_EXERCISE = 5;
+    private static final int MAX_DETAIL = 20000;
 
     private final RepoExerciseRepository repos;
     private final RepoSubmissionRepository submissions;
     private final RunService runs;
     private final RateLimiter limiter;
     private final ReviewGrader grader;
+    private final SyntaxAssistant assistant;
     private final ObjectMapper json;
 
     RepoService(RepoExerciseRepository repos, RepoSubmissionRepository submissions, RunService runs, RateLimiter limiter,
-                ReviewGrader grader, ObjectMapper json) {
+                ReviewGrader grader, SyntaxAssistant assistant, ObjectMapper json) {
         this.repos = repos;
         this.submissions = submissions;
         this.runs = runs;
         this.limiter = limiter;
         this.grader = grader;
+        this.assistant = assistant;
         this.json = json;
     }
 
@@ -77,7 +84,39 @@ public class RepoService {
         var c = content(r);
         boolean revealed = revealed(user, r);
         return new RepoView(r.getSlug(), r.getTitle(), r.getLanguage(), r.getDifficulty(), r.getTags(), r.getDescription(),
-                c.files(), revealed, revealed ? c.issues() : null);
+                c.files(), revealed, revealed ? c.issues() : null, questionsLeft(user, r));
+    }
+
+    /** Answers a general language question. The assistant is never shown the exercise, so it cannot give it away. */
+    public QuestionAnswer ask(UUID user, String slug, String question) {
+        var r = find(slug);
+        if (questionsLeft(user, r) == 0)
+            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
+                    "You have used all " + QUESTIONS_PER_EXERCISE + " questions for this exercise");
+        var answer = assistant.answer(r.getLanguage(), question);
+        submissions.save(new RepoSubmission(user, r.getId(), Kind.ASK, 0, 0));
+        return new QuestionAnswer(answer, questionsLeft(user, r));
+    }
+
+    private int questionsLeft(UUID user, RepoExercise r) {
+        return (int) Math.max(0, QUESTIONS_PER_EXERCISE - submissions.countByUserIdAndRepoExerciseIdAndKind(user, r.getId(), Kind.ASK));
+    }
+
+    public List<TestRunSummary> testRuns(UUID user, String slug) {
+        var r = find(slug);
+        return submissions.findTop20ByUserIdAndRepoExerciseIdAndKindOrderByIdDesc(user, r.getId(), Kind.FIX).stream()
+                .map(s -> new TestRunSummary(s.getId(), s.getCreatedAt(), s.getScore(), s.getMaxScore(),
+                        s.getMaxScore() > 0 && s.getScore() == s.getMaxScore(), tests(s.getDetail())))
+                .toList();
+    }
+
+    private List<TestCase> tests(String detail) {
+        if (detail == null) return List.of();
+        try {
+            return json.readValue(detail, new TypeReference<List<TestCase>>() {});
+        } catch (JsonProcessingException e) {
+            return List.of();
+        }
     }
 
     /** Reveals the planted issues and unlocks fixing without a graded review. */
@@ -121,7 +160,7 @@ public class RepoService {
         var tests = parseTests(result.stdout());
         int passed = (int) tests.stream().filter(TestCase::passed).count();
         boolean allPassed = !tests.isEmpty() && passed == tests.size() && result.exitCode() == 0;
-        submissions.save(new RepoSubmission(user, r.getId(), Kind.FIX, allPassed ? tests.size() : passed, tests.size()));
+        submissions.save(new RepoSubmission(user, r.getId(), Kind.FIX, allPassed ? tests.size() : passed, tests.size(), detail(tests)));
         return new TestRunResult(tests, passed, tests.size(), allPassed, result);
     }
 
@@ -146,6 +185,15 @@ public class RepoService {
             } catch (RuntimeException e) {
                 log.warn("Could not verify repo exercise '{}': {}", r.getSlug(), e.getMessage());
             }
+        }
+    }
+
+    private String detail(List<TestCase> tests) {
+        try {
+            var detail = json.writeValueAsString(tests);
+            return detail.length() <= MAX_DETAIL ? detail : null;
+        } catch (JsonProcessingException e) {
+            return null;
         }
     }
 

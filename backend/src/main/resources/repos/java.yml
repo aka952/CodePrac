@@ -10,7 +10,7 @@
     - Cart.add(sku, qty) adds qty to whatever is already in the cart. qty must be positive (IllegalArgumentException otherwise).
     - CheckoutService.checkout(cart, coupon) returns the total in cents, takes 10% off for coupon SAVE10, and removes the items from stock.
     - Checkout fails with IllegalArgumentException for an unknown SKU and IllegalStateException when any item has too little stock.
-      A failed checkout must not change any stock.
+    - A failed checkout must not change any stock.
 
     Hidden tests call the public constructors and methods (Product, Inventory.add/find, Cart.add, CheckoutService.checkout), so keep those signatures.
   files:
@@ -337,8 +337,7 @@
     The user registration module of a small web app. Several request threads call it at the same time.
 
     Intended behaviour:
-    - register(email, password) creates a user. Emails are unique ignoring case; a duplicate or a password shorter than 6 characters
-      fails with IllegalArgumentException.
+    - register(email, password) creates a user. Emails are unique ignoring case; a duplicate or a password shorter than 6 characters fails with IllegalArgumentException.
     - login(email, password) returns true only for the right password, and false (never an exception) for an unknown email.
     - Passwords are stored with a salted, slow password hash (for example PBKDF2 from javax.crypto) and never written to logs.
     - Ids are unique even under concurrent use. removeInactive() deletes every inactive user and returns how many it removed.

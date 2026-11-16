@@ -1,7 +1,5 @@
 package dev.codecomp.repo;
 
-import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.errors.AnthropicException;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.OutputConfig;
@@ -37,19 +35,17 @@ class ClaudeReviewGrader implements ReviewGrader {
             Put every other point the review makes into extraFindings, marking whether it is a real problem in this code.
             Keep all feedback concise and specific to the code.""";
 
-    private final AnthropicClient client;
+    private final ClaudeClient claude;
     private final String model;
 
-    ClaudeReviewGrader(@Value("${app.review.model}") String model) {
+    ClaudeReviewGrader(ClaudeClient claude, @Value("${app.review.model}") String model) {
+        this.claude = claude;
         this.model = model;
-        boolean configured = !blank(System.getenv("ANTHROPIC_API_KEY")) || !blank(System.getenv("ANTHROPIC_AUTH_TOKEN"));
-        this.client = configured ? AnthropicOkHttpClient.fromEnv() : null;
-        if (!configured) log.warn("ANTHROPIC_API_KEY is not set: repo review grading is disabled");
     }
 
     @Override
     public ReviewGrade grade(RepoExercise exercise, RepoContent content, String review) {
-        if (client == null) throw new UnavailableException("Review grading is not configured: set ANTHROPIC_API_KEY on the backend");
+        var client = claude.get();
         var params = MessageCreateParams.builder()
                 .model(model)
                 .maxTokens(16000L)
@@ -103,6 +99,4 @@ class ClaudeReviewGrader implements ReviewGrader {
         for (int i = 0; i < lines.length; i++) sb.append("%3d | %s%n".formatted(i + 1, lines[i]));
         return sb.toString();
     }
-
-    private static boolean blank(String s) { return s == null || s.isBlank(); }
 }
