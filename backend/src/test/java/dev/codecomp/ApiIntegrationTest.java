@@ -74,6 +74,7 @@ class ApiIntegrationTest {
             };
         }
 
+
         @Bean
         @Primary
         SyntaxAssistant fakeAssistant() {
@@ -133,6 +134,36 @@ class ApiIntegrationTest {
         attempt("java-off-by-one", "3").andExpect(jsonPath("$.correct", is(false))).andExpect(jsonPath("$.solution", nullValue()));
         attempt("java-off-by-one", "5").andExpect(jsonPath("$.solution", nullValue()));
         attempt("java-off-by-one", "6").andExpect(jsonPath("$.attempts", is(3))).andExpect(jsonPath("$.solution.answer", is("4")));
+    }
+
+    @Test
+    void pointsRewardSolvingInFewerAttempts() throws Exception {
+        mvc.perform(get("/api/points").header("X-User-Id", user)).andExpect(jsonPath("$.total", is(0)));
+
+        attempt("java-int-overflow", "-2147483648 2147483648\\n").andExpect(jsonPath("$.points", is(10)));
+        attempt("java-off-by-one", "3").andExpect(jsonPath("$.points", is(0)));
+        attempt("java-off-by-one", "4").andExpect(jsonPath("$.correct", is(true))).andExpect(jsonPath("$.points", is(7)));
+        // solving again later does not change what was earned
+        attempt("java-off-by-one", "4").andExpect(jsonPath("$.points", is(7)));
+
+        mvc.perform(get("/api/points").header("X-User-Id", user))
+                .andExpect(jsonPath("$.total", is(17)))
+                .andExpect(jsonPath("$.snippets", is(17)))
+                .andExpect(jsonPath("$.repos", is(0)));
+        mvc.perform(get("/api/exercises").header("X-User-Id", user))
+                .andExpect(jsonPath("$[?(@.slug == 'java-off-by-one')].points", contains(7)))
+                .andExpect(jsonPath("$[?(@.slug == 'java-off-by-one')].maxPoints", contains(10)));
+        mvc.perform(get("/api/exercises/java-off-by-one").header("X-User-Id", user))
+                .andExpect(jsonPath("$.points", is(7)))
+                .andExpect(jsonPath("$.maxPoints", is(10)));
+    }
+
+    @Test
+    void nothingIsEarnedAfterGivingUp() throws Exception {
+        mvc.perform(post("/api/exercises/java-off-by-one/attempts").header("X-User-Id", user)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"giveUp\":true}"));
+        attempt("java-off-by-one", "4").andExpect(jsonPath("$.correct", is(true))).andExpect(jsonPath("$.points", is(0)));
+        mvc.perform(get("/api/points").header("X-User-Id", user)).andExpect(jsonPath("$.total", is(0)));
     }
 
     @Test
@@ -214,6 +245,9 @@ class ApiIntegrationTest {
                 .andExpect(jsonPath("$.total", is(2)))
                 .andExpect(jsonPath("$.passed", is(1)))
                 .andExpect(jsonPath("$.allPassed", is(false)))
+                // the fake sandbox passes the same single test for the untouched code, so nothing was won
+                .andExpect(jsonPath("$.points", is(0)))
+                .andExpect(jsonPath("$.maxPoints", is(100)))
                 .andExpect(jsonPath("$.tests[1].name", is("breaks")))
                 .andExpect(jsonPath("$.tests[1].message", is("expected 1 but got 2")));
     }
@@ -255,6 +289,7 @@ class ApiIntegrationTest {
         mvc.perform(get("/api/repos/java-checkout-service").header("X-User-Id", user))
                 .andExpect(jsonPath("$.questionsLeft", is(5)));
     }
+
 
     @Test
     void repoEndpointsRejectBadInput() throws Exception {

@@ -54,7 +54,10 @@ function buildTree(paths: string[]): TreeNode[] {
 }
 
 /** What the results box shows: a fresh run (with timing) or one picked from the history. */
-interface ShownRun { tests: TestCase[]; passed: number; total: number; allPassed: boolean; run?: RunResponse; at?: string }
+interface ShownRun {
+  tests: TestCase[]; passed: number; total: number; allPassed: boolean
+  run?: RunResponse; at?: string; points?: number; maxPoints?: number
+}
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 
@@ -79,6 +82,7 @@ export default function RepoPage() {
   const [testing, setTesting] = useState(false)
   const [testError, setTestError] = useState<string | null>(null)
   const [questionsLeft, setQuestionsLeft] = useState(0)
+  const [points, setPoints] = useState(0)
 
   useEffect(() => {
     setRepo(null); setError(null); setResult(null); setShown(null); setFocus(null); setRuns([]); setShowRuns(false)
@@ -95,6 +99,7 @@ export default function RepoPage() {
       setTabs(first ? [first] : [])
       setActive(first)
       setQuestionsLeft(r.questionsLeft)
+      setPoints(r.points)
     }).catch(e => setError(e.message))
     api.repos().then(setAll).catch(() => setAll([]))
     api.testRuns(slug).then(setRuns).catch(() => setRuns([]))
@@ -171,7 +176,9 @@ export default function RepoPage() {
     setTesting(true)
     setTestError(null)
     try {
-      setShown(await api.testRun(slug, Object.fromEntries(modified.map(p => [p, code[p]]))))
+      const run = await api.testRun(slug, Object.fromEntries(modified.map(p => [p, code[p]])))
+      setShown(run)
+      setPoints(run.points)
       api.testRuns(slug).then(setRuns).catch(() => {})
     } catch (e) {
       setTestError((e as Error).message)
@@ -211,6 +218,7 @@ export default function RepoPage() {
           <span className={`lang lang-${repo.language}`}>{repo.language}</span>
           <span className={`diff diff-${repo.difficulty.toLowerCase()}`}>{repo.difficulty.toLowerCase()}</span>
           <span className="type">{repo.files.length} files</span>
+          <span className={`pts${points ? ' earned' : ''}`}>{points ? `${points} / ${repo.maxPoints}` : `up to ${repo.maxPoints}`} pts</span>
           {repo.tags.map(t => <span key={t} className="tag">#{t}</span>)}
         </div>
       </div>
@@ -226,6 +234,10 @@ export default function RepoPage() {
           {leftTab === 'statement' ? (
             <>
               <p className="explanation">{repo.description}</p>
+              <p className="muted small">
+                Worth up to {repo.maxPoints} points: 80% is shared across the hidden tests you fix, and 20% is a bonus for passing them all.
+                Your best run counts.
+              </p>
               {next && (
                 <Link to={`/repo/${next.slug}`} className="upnext">
                   <span className="muted small">Up next</span>
@@ -459,6 +471,7 @@ function TestResults({ shown }: { shown: ShownRun }) {
         <span className="run-status">
           {shown.total === 0 ? 'No tests ran' : shown.allPassed ? `All ${shown.total} tests pass` : `${shown.passed} / ${shown.total} tests pass`}
         </span>
+        {shown.points !== undefined && <span>{shown.points} / {shown.maxPoints} pts</span>}
         {run && <span>{run.durationMs} ms</span>}
         {run?.cached && <span className="cached" title="Same code ran before; result served from cache">cached</span>}
         {run?.status === 'TIMEOUT' && <span className="cached">timed out</span>}

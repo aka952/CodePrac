@@ -11,6 +11,8 @@ public interface AttemptRepository extends JpaRepository<Attempt, Long> {
 
     long countByUserIdAndExerciseId(UUID userId, Long exerciseId);
 
+    List<Attempt> findByUserIdOrderByIdAsc(UUID userId);
+
     boolean existsByUserIdAndExerciseIdAndCorrectTrue(UUID userId, Long exerciseId);
 
     @Query("select distinct a.exerciseId from Attempt a where a.userId = :userId")

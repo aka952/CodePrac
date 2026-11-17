@@ -9,6 +9,7 @@ import dev.codecomp.web.Api.AttemptRequest;
 import dev.codecomp.web.Api.AttemptResult;
 import dev.codecomp.web.Api.ExerciseSummary;
 import dev.codecomp.web.Api.ExerciseView;
+import dev.codecomp.web.Api.PointsSummary;
 import dev.codecomp.web.Api.QuestionAnswer;
 import dev.codecomp.web.Api.QuestionRequest;
 import dev.codecomp.web.Api.RepoSummary;
@@ -76,6 +77,14 @@ class ApiController {
     @PostMapping("/runs")
     RunResponse run(@RequestHeader(USER) UUID user, @Valid @RequestBody RunRequest req) {
         return runs.run(user, req.language(), req.code());
+    }
+
+
+    @GetMapping("/points")
+    PointsSummary points(@RequestHeader(USER) UUID user) {
+        int snippets = exercises.totalPoints(user);
+        int repoPoints = repos.totalPoints(user);
+        return new PointsSummary(snippets + repoPoints, snippets, repoPoints);
     }
 
     @GetMapping("/repos")

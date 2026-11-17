@@ -3,6 +3,7 @@ package dev.codecomp.repo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.codecomp.grading.Points;
 import dev.codecomp.repo.RepoContent.RepoFile;
 import dev.codecomp.repo.RepoSubmission.Kind;
 import dev.codecomp.run.RateLimiter;
@@ -33,6 +34,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -57,6 +59,7 @@ public class RepoService {
     private final ReviewGrader grader;
     private final SyntaxAssistant assistant;
     private final ObjectMapper json;
+    private final Map<String, Integer> baselines = new ConcurrentHashMap<>();
 
     RepoService(RepoExerciseRepository repos, RepoSubmissionRepository submissions, RunService runs, RateLimiter limiter,
                 ReviewGrader grader, SyntaxAssistant assistant, ObjectMapper json) {
@@ -72,11 +75,48 @@ public class RepoService {
     public List<RepoSummary> list(UUID user) {
         var attempted = Set.copyOf(submissions.attemptedIds(user));
         var solved = Set.copyOf(submissions.solvedIds(user));
+        var best = bestRuns(user);
         return repos.findAllByOrderBySortOrderAsc().stream().map(r -> {
             var c = content(r);
             return new RepoSummary(r.getSlug(), r.getTitle(), r.getLanguage(), r.getDifficulty(), r.getTags(), c.files().size(),
-                    c.issues().size(), solved.contains(r.getId()) ? "SOLVED" : attempted.contains(r.getId()) ? "ATTEMPTED" : "NEW");
+                    c.issues().size(), solved.contains(r.getId()) ? "SOLVED" : attempted.contains(r.getId()) ? "ATTEMPTED" : "NEW",
+                    points(r, c, best.get(r.getId())), Points.repoMax(r.getDifficulty()));
         }).toList();
+    }
+
+    public int totalPoints(UUID user) {
+        var best = bestRuns(user);
+        return repos.findAll().stream().filter(r -> best.containsKey(r.getId()))
+                .mapToInt(r -> points(r, content(r), best.get(r.getId()))).sum();
+    }
+
+    /** The user's best test run per repo exercise id. */
+    private Map<Long, RepoSubmission> bestRuns(UUID user) {
+        return submissions.findByUserIdAndKind(user, Kind.FIX).stream()
+                .filter(s -> s.getMaxScore() > 0)
+                .collect(Collectors.toMap(RepoSubmission::getRepoExerciseId, Function.identity(),
+                        (a, b) -> b.getScore() > a.getScore() ? b : a));
+    }
+
+    private int points(RepoExercise r, RepoContent c, RepoSubmission best) {
+        return best == null ? 0 : Points.repo(r.getDifficulty(), baseline(r, c), best.getScore(), best.getMaxScore());
+    }
+
+    /**
+     * How many hidden tests pass on the untouched code; those earn no points. Normally a run-cache hit, because every
+     * exercise is run at startup. If the sandbox cannot answer, nothing but a full pass scores.
+     */
+    private int baseline(RepoExercise r, RepoContent c) {
+        var known = baselines.get(r.getSlug());
+        if (known != null) return known;
+        try {
+            var result = runs.runTrusted(RepoSeeder.projectLanguage(r.getLanguage()), bundle(c, Map.of()));
+            int passed = (int) parseTests(result.stdout()).stream().filter(TestCase::passed).count();
+            if (result.cacheable()) baselines.put(r.getSlug(), passed);
+            return passed;
+        } catch (RuntimeException e) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     public RepoView get(UUID user, String slug) {
@@ -84,7 +124,8 @@ public class RepoService {
         var c = content(r);
         boolean revealed = revealed(user, r);
         return new RepoView(r.getSlug(), r.getTitle(), r.getLanguage(), r.getDifficulty(), r.getTags(), r.getDescription(),
-                c.files(), revealed, revealed ? c.issues() : null, questionsLeft(user, r));
+                c.files(), revealed, revealed ? c.issues() : null, questionsLeft(user, r),
+                points(r, c, bestRuns(user).get(r.getId())), Points.repoMax(r.getDifficulty()));
     }
 
     /** Answers a general language question. The assistant is never shown the exercise, so it cannot give it away. */
@@ -161,7 +202,8 @@ public class RepoService {
         int passed = (int) tests.stream().filter(TestCase::passed).count();
         boolean allPassed = !tests.isEmpty() && passed == tests.size() && result.exitCode() == 0;
         submissions.save(new RepoSubmission(user, r.getId(), Kind.FIX, allPassed ? tests.size() : passed, tests.size(), detail(tests)));
-        return new TestRunResult(tests, passed, tests.size(), allPassed, result);
+        return new TestRunResult(tests, passed, tests.size(), allPassed, result,
+                points(r, c, bestRuns(user).get(r.getId())), Points.repoMax(r.getDifficulty()));
     }
 
     /** Runs every exercise's hidden tests against the original code (must fail) and the solution (must pass). */

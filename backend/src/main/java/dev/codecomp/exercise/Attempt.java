@@ -36,5 +36,8 @@ public class Attempt {
         this.createdAt = Instant.now();
     }
 
+    public Long getExerciseId() { return exerciseId; }
+    /** Null when the user gave up. */
+    public String getAnswer() { return answer; }
     public boolean isCorrect() { return correct; }
 }

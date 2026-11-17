@@ -56,6 +56,7 @@ export default function ExerciseList() {
               <div className="card-top">
                 <span className={`lang lang-${e.language}`}>{e.language}</span>
                 <span className={`diff diff-${e.difficulty.toLowerCase()}`}>{e.difficulty.toLowerCase()}</span>
+                <span className={`pts${e.points ? ' earned' : ''}`}>{e.points ? `${e.points} / ${e.maxPoints}` : e.maxPoints} pts</span>
                 <StatusDot status={e.status} />
               </div>
               <h3>{e.title}</h3>

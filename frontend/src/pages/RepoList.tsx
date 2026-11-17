@@ -35,6 +35,7 @@ export default function RepoList() {
               <div className="card-top">
                 <span className={`lang lang-${r.language}`}>{r.language}</span>
                 <span className={`diff diff-${r.difficulty.toLowerCase()}`}>{r.difficulty.toLowerCase()}</span>
+                <span className={`pts${r.points ? ' earned' : ''}`}>{r.points ? `${r.points} / ${r.maxPoints}` : r.maxPoints} pts</span>
                 <span className={`dot dot-${r.status.toLowerCase()}`} title={r.status.toLowerCase()} />
               </div>
               <h3>{r.title}</h3>

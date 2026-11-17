@@ -11,6 +11,14 @@ export interface ExerciseSummary {
   difficulty: Difficulty
   tags: string[]
   status: Progress
+  points: number
+  maxPoints: number
+}
+
+export interface PointsSummary {
+  total: number
+  snippets: number
+  repos: number
 }
 
 export interface Solution {
@@ -30,6 +38,7 @@ export interface AttemptResult {
   correct: boolean
   attempts: number
   solution: Solution | null
+  points: number
 }
 
 export interface RunResponse {
@@ -65,6 +74,8 @@ export interface RepoSummary {
   files: number
   issues: number
   status: Progress
+  points: number
+  maxPoints: number
 }
 
 export interface RepoView extends Omit<RepoSummary, 'files' | 'issues' | 'status'> {
@@ -103,6 +114,8 @@ export interface TestRunResult {
   total: number
   allPassed: boolean
   run: RunResponse
+  points: number
+  maxPoints: number
 }
 
 export interface TestRunSummary {
@@ -113,6 +126,7 @@ export interface TestRunSummary {
   allPassed: boolean
   tests: TestCase[]
 }
+
 
 export interface QuestionAnswer {
   answer: string
@@ -152,11 +166,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** Fired on window whenever an action may have changed the user's points, so the top bar can refresh its total. */
+export const POINTS_EVENT = 'codecomp:points'
+const pointsMayHaveChanged = <T,>(result: T): T => {
+  window.dispatchEvent(new Event(POINTS_EVENT))
+  return result
+}
+
 export const api = {
+  points: () => request<PointsSummary>('/points'),
   exercises: () => request<ExerciseSummary[]>('/exercises'),
   exercise: (slug: string) => request<ExerciseView>(`/exercises/${encodeURIComponent(slug)}`),
   attempt: (slug: string, body: { answer?: string; giveUp?: boolean }) =>
-    request<AttemptResult>(`/exercises/${encodeURIComponent(slug)}/attempts`, { method: 'POST', body: JSON.stringify(body) }),
+    request<AttemptResult>(`/exercises/${encodeURIComponent(slug)}/attempts`, { method: 'POST', body: JSON.stringify(body) })
+      .then(pointsMayHaveChanged),
   run: (language: string, code: string) =>
     request<RunResponse>('/runs', { method: 'POST', body: JSON.stringify({ language, code }) }),
   repos: () => request<RepoSummary[]>('/repos'),
@@ -168,7 +191,8 @@ export const api = {
   ask: (slug: string, question: string) =>
     request<QuestionAnswer>(`/repos/${encodeURIComponent(slug)}/questions`, { method: 'POST', body: JSON.stringify({ question }) }),
   testRun: (slug: string, files: Record<string, string>) =>
-    request<TestRunResult>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) }),
+    request<TestRunResult>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) })
+      .then(pointsMayHaveChanged),
 }
 
 export const TYPE_LABEL: Record<ExerciseType, string> = {

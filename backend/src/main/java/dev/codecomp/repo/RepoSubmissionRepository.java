@@ -13,6 +13,8 @@ public interface RepoSubmissionRepository extends JpaRepository<RepoSubmission, 
 
     boolean existsByUserIdAndRepoExerciseIdAndKindIn(UUID userId, Long repoExerciseId, Collection<Kind> kinds);
 
+    List<RepoSubmission> findByUserIdAndKind(UUID userId, Kind kind);
+
     long countByUserIdAndRepoExerciseIdAndKind(UUID userId, Long repoExerciseId, Kind kind);
 
     List<RepoSubmission> findTop20ByUserIdAndRepoExerciseIdAndKindOrderByIdDesc(UUID userId, Long repoExerciseId, Kind kind);

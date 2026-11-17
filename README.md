@@ -65,6 +65,19 @@ All endpoints need an `X-User-Id: <uuid>` header (the frontend generates one in 
 | GET | `/api/repos/{slug}/test-runs` | | the user's last 20 test runs for this exercise, newest first, with per-test results |
 | POST | `/api/repos/{slug}/questions` | `{question}` | Ask AI: general language questions only. `429` once the 5 questions for this exercise are used; needs `ANTHROPIC_API_KEY` |
 
+## Points
+
+Points are derived from stored attempts and test runs (nothing extra is saved), so the rules can change without a migration. They live in `grading/Points.java`.
+
+| | Easy | Medium | Hard |
+|---|---|---|---|
+| Snippet exercise | 10 | 20 | 30 |
+| Repo fix | 50 | 100 | 150 |
+
+- **Snippets:** full points for a correct first attempt, 70% on the second, 40% on the third. Nothing once the answer has been revealed (after giving up or three wrong attempts).
+- **Repo fixes:** 80% is shared equally across the hidden tests the user makes pass, and the remaining 20% is a bonus for passing all of them. Tests that already pass on the untouched code earn nothing. The user's best run counts.
+- Reviews and Ask AI do not affect points.
+
 ## Adding exercises
 
 Append to any `exercises/*.yml` (files load alphabetically, entries in order):
@@ -138,6 +151,7 @@ cd backend && mvn test
 - `ApiIntegrationTest`: full Spring context on H2 with a fake sandbox and fake review grader: listing, hidden answers, reveal-after-3, give-up, caching, rate limiting, error codes, repo review/test-run endpoints
 - `RepoExercisesTest`: every repo exercise against real Docker: hidden tests fail on the original code, pass on the reference solution
 - `SandboxEscapeTest`: hostile programs against real Docker. Use `SANDBOX_PYTHON_IMAGE`, `SANDBOX_JAVA_IMAGE` and `SANDBOX_RUNTIME` to point it at other images or gVisor.
+
 
 ## Configuration
 

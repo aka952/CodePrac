@@ -52,6 +52,7 @@ public class RepoSubmission {
     }
 
     public Long getId() { return id; }
+    public Long getRepoExerciseId() { return repoExerciseId; }
     public int getScore() { return score; }
     public int getMaxScore() { return maxScore; }
     public Instant getCreatedAt() { return createdAt; }

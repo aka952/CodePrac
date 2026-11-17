@@ -18,16 +18,19 @@ import java.util.Map;
 public interface Api {
 
     record ExerciseSummary(String slug, String title, String language, ExerciseType type, Difficulty difficulty,
-                           List<String> tags, String status) {}
+                           List<String> tags, String status, int points, int maxPoints) {}
 
     record ExerciseView(String slug, String title, String language, ExerciseType type, Difficulty difficulty, List<String> tags,
-                        String code, String question, String hint, boolean solved, Solution solution) {}
+                        String code, String question, String hint, boolean solved, Solution solution, int points, int maxPoints) {}
 
     record Solution(String answer, String explanation) {}
 
     record AttemptRequest(@Size(max = 5000) String answer, boolean giveUp) {}
 
-    record AttemptResult(boolean correct, long attempts, Solution solution) {}
+    /** {@code points} is what the user has earned on this exercise after this attempt. */
+    record AttemptResult(boolean correct, long attempts, Solution solution, int points) {}
+
+    record PointsSummary(int total, int snippets, int repos) {}
 
     record RunRequest(@NotBlank @Size(max = 20) String language, @NotBlank @Size(max = 20000) String code) {}
 
@@ -38,11 +41,11 @@ public interface Api {
     }
 
     record RepoSummary(String slug, String title, String language, Difficulty difficulty, List<String> tags, int files, int issues,
-                       String status) {}
+                       String status, int points, int maxPoints) {}
 
     /** {@code issues} is only present once revealed: after a graded review, or when the user skips the review. */
     record RepoView(String slug, String title, String language, Difficulty difficulty, List<String> tags, String description,
-                    List<RepoFile> files, boolean revealed, List<Issue> issues, int questionsLeft) {}
+                    List<RepoFile> files, boolean revealed, List<Issue> issues, int questionsLeft, int points, int maxPoints) {}
 
     record ReviewRequest(@NotBlank @Size(max = 10000) String review) {}
 
@@ -55,7 +58,8 @@ public interface Api {
 
     record TestCase(String name, boolean passed, String message) {}
 
-    record TestRunResult(List<TestCase> tests, int passed, int total, boolean allPassed, RunResponse run) {}
+    /** {@code points} is what the user has earned on this exercise so far (their best run counts). */
+    record TestRunResult(List<TestCase> tests, int passed, int total, boolean allPassed, RunResponse run, int points, int maxPoints) {}
 
     record TestRunSummary(long id, Instant createdAt, int passed, int total, boolean allPassed, List<TestCase> tests) {}
 

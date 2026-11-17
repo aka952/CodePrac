@@ -48,6 +48,7 @@ export default function ExercisePage() {
   const solution = result?.solution ?? ex.solution
   const unlocked = solution !== null
   const solvedNow = result?.correct || (ex.solved && !result)
+  const earned = result?.points ?? ex.points
   const isSpotBug = ex.type === 'SPOT_BUG'
   const answerLine = isSpotBug && solution ? Number(solution.answer) : null
   const modified = code !== ex.code
@@ -91,6 +92,7 @@ export default function ExercisePage() {
           <span className={`lang lang-${ex.language}`}>{ex.language}</span>
           <span className={`diff diff-${ex.difficulty.toLowerCase()}`}>{ex.difficulty.toLowerCase()}</span>
           <span className="type">{TYPE_LABEL[ex.type]}</span>
+          <span className={`pts${earned ? ' earned' : ''}`}>{earned ? `${earned} / ${ex.maxPoints}` : `up to ${ex.maxPoints}`} pts</span>
           {ex.tags.map(t => <span key={t} className="tag">#{t}</span>)}
         </div>
       </div>
@@ -157,6 +159,9 @@ export default function ExercisePage() {
                   </button>
                   <button type="button" className="link" onClick={() => submit(true)} disabled={submitting}>Give up</button>
                 </div>
+                <p className="muted small">
+                  {ex.maxPoints} points on the first try, 70% on the second, 40% on the third. Nothing after giving up.
+                </p>
               </form>
             )}
 
@@ -169,7 +174,10 @@ export default function ExercisePage() {
             {solution && (
               <div className="solution">
                 {solvedNow
-                  ? <p className="verdict right">✓ Correct{result ? ` in ${result.attempts} attempt${result.attempts > 1 ? 's' : ''}` : ''}!</p>
+                  ? <p className="verdict right">
+                      ✓ Correct{result ? ` in ${result.attempts} attempt${result.attempts > 1 ? 's' : ''}` : ''}!
+                      {earned > 0 ? ` +${earned} points` : ' No points: the answer had already been revealed.'}
+                    </p>
                   : <p className="verdict revealed">Answer revealed</p>}
                 <h3>Expected</h3>
                 {isSpotBug
