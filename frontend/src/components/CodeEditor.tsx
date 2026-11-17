@@ -1,6 +1,6 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useEffect, useRef } from 'react'
-import '../monaco'
+import { EDITOR_THEME } from '../monaco'
 
 type MonacoEditor = Parameters<OnMount>[0]
 type Monaco = Parameters<OnMount>[1]
@@ -61,7 +61,7 @@ export default function CodeEditor({ language, value, readOnly, onChange, select
         height={height}
         language={language}
         value={value}
-        theme="vs-dark"
+        theme={EDITOR_THEME}
         onMount={handleMount}
         onChange={v => onChange?.(v ?? '')}
         options={{
@@ -73,6 +73,7 @@ export default function CodeEditor({ language, value, readOnly, onChange, select
           fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace",
           scrollBeyondLastLine: false,
           renderLineHighlight: readOnly ? 'none' : 'line',
+          bracketPairColorization: { enabled: false },
           contextmenu: !readOnly,
           padding: { top: 12, bottom: 12 },
           tabSize: 4,
