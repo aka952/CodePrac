@@ -127,6 +127,10 @@ export interface TestRunSummary {
   tests: TestCase[]
 }
 
+export interface EditResult {
+  replacement: string
+  note: string | null
+}
 
 export interface QuestionAnswer {
   answer: string
@@ -182,6 +186,8 @@ export const api = {
       .then(pointsMayHaveChanged),
   run: (language: string, code: string) =>
     request<RunResponse>('/runs', { method: 'POST', body: JSON.stringify({ language, code }) }),
+  edit: (language: string, code: string, selection: string, instruction: string) =>
+    request<EditResult>('/edits', { method: 'POST', body: JSON.stringify({ language, code, selection, instruction }) }),
   repos: () => request<RepoSummary[]>('/repos'),
   repo: (slug: string) => request<RepoView>(`/repos/${encodeURIComponent(slug)}`),
   review: (slug: string, review: string) =>

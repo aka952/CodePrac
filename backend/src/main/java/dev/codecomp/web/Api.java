@@ -66,4 +66,10 @@ public interface Api {
     record QuestionRequest(@NotBlank @Size(max = 1000) String question) {}
 
     record QuestionAnswer(String answer, int questionsLeft) {}
+
+    record EditRequest(@NotBlank @Size(max = 20) String language, @NotBlank @Size(max = 50000) String code,
+                       @NotBlank @Size(max = 20000) String selection, @NotBlank @Size(max = 1000) String instruction) {}
+
+    /** {@code note} is set when the assistant left the selection unchanged and explains why. */
+    record EditResult(String replacement, String note) {}
 }

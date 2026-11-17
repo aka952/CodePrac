@@ -1,5 +1,7 @@
 package dev.codecomp;
 
+import dev.codecomp.repo.CodeEditAssistant;
+import dev.codecomp.repo.CodeEditAssistant.CodeEdit;
 import dev.codecomp.repo.ReviewGrader;
 import dev.codecomp.repo.ReviewGrader.IssueVerdict;
 import dev.codecomp.repo.ReviewGrader.ReviewGrade;
@@ -74,6 +76,14 @@ class ApiIntegrationTest {
             };
         }
 
+        /** Upper-cases the selection, or declines when asked to "fix it". */
+        @Bean
+        @Primary
+        CodeEditAssistant fakeEditor() {
+            return (language, file, selection, instruction) -> instruction.equals("fix it")
+                    ? new CodeEdit(selection, "Say what to change.")
+                    : new CodeEdit(selection.toUpperCase(), null);
+        }
 
         @Bean
         @Primary
@@ -290,6 +300,27 @@ class ApiIntegrationTest {
                 .andExpect(jsonPath("$.questionsLeft", is(5)));
     }
 
+    @Test
+    void inlineEditRewritesTheSelection() throws Exception {
+        String body = "{\"language\":\"java\",\"code\":\"int a = 1;\\nint b = 2;\\n\",\"selection\":\"int b = 2;\",\"instruction\":\"%s\"}";
+        json("/api/edits", body.formatted("shout"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.replacement", is("INT B = 2;")))
+                .andExpect(jsonPath("$.note", nullValue()));
+        json("/api/edits", body.formatted("fix it"))
+                .andExpect(jsonPath("$.replacement", is("int b = 2;")))
+                .andExpect(jsonPath("$.note", is("Say what to change.")));
+    }
+
+    @Test
+    void inlineEditRejectsBadInput() throws Exception {
+        json("/api/edits", "{\"language\":\"java\",\"code\":\"int a;\",\"selection\":\"int a;\",\"instruction\":\" \"}")
+                .andExpect(status().isBadRequest());
+        json("/api/edits", "{\"language\":\"java\",\"code\":\"int a;\",\"selection\":\"int zzz;\",\"instruction\":\"rename\"}")
+                .andExpect(status().isBadRequest());
+        json("/api/edits", "{\"language\":\"cobol\",\"code\":\"x\",\"selection\":\"x\",\"instruction\":\"rename\"}")
+                .andExpect(status().isBadRequest());
+    }
 
     @Test
     void repoEndpointsRejectBadInput() throws Exception {

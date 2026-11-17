@@ -196,3 +196,11 @@ main:has(.ide) { max-width: 1720px; }
 .pts.earned { color: var(--ok); }
 .card-top .pts { margin-left: auto; }
 .card-top .pts + .dot { margin-left: 0; }
+
+.editor-host { position: relative; }
+.ai-edit { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--tab-line); border-radius: 6px; padding: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .45); }
+.ai-edit-row { display: flex; gap: 6px; }
+.ai-edit input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; color: var(--text); font: 13px/1.4 inherit; padding: 6px 8px; }
+.ai-edit input:focus { outline: none; border-color: var(--accent); }
+.ai-edit button { padding: 5px 12px; font-size: 13px; }
+.ai-edit p { margin: 6px 2px 0; color: var(--warn); }

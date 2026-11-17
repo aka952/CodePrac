@@ -2,11 +2,14 @@ package dev.codecomp.web;
 
 import dev.codecomp.exercise.Exercise.Difficulty;
 import dev.codecomp.exercise.ExerciseService;
+import dev.codecomp.repo.CodeEditService;
 import dev.codecomp.repo.RepoService;
 import dev.codecomp.run.RunService;
 import dev.codecomp.sandbox.Sandbox;
 import dev.codecomp.web.Api.AttemptRequest;
 import dev.codecomp.web.Api.AttemptResult;
+import dev.codecomp.web.Api.EditRequest;
+import dev.codecomp.web.Api.EditResult;
 import dev.codecomp.web.Api.ExerciseSummary;
 import dev.codecomp.web.Api.ExerciseView;
 import dev.codecomp.web.Api.PointsSummary;
@@ -46,8 +49,10 @@ class ApiController {
     private final RunService runs;
     private final Sandbox sandbox;
     private final RepoService repos;
+    private final CodeEditService edits;
 
-    ApiController(ExerciseService exercises, RunService runs, Sandbox sandbox, RepoService repos) {
+    ApiController(ExerciseService exercises, RunService runs, Sandbox sandbox, RepoService repos, CodeEditService edits) {
+        this.edits = edits;
         this.exercises = exercises;
         this.runs = runs;
         this.sandbox = sandbox;
@@ -79,6 +84,10 @@ class ApiController {
         return runs.run(user, req.language(), req.code());
     }
 
+    @PostMapping("/edits")
+    EditResult edit(@RequestHeader(USER) UUID user, @Valid @RequestBody EditRequest req) {
+        return edits.edit(user, req);
+    }
 
     @GetMapping("/points")
     PointsSummary points(@RequestHeader(USER) UUID user) {

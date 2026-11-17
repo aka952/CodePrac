@@ -280,6 +280,7 @@ export default function RepoPage() {
                 answerLine={unlocked && focus?.file === active ? focus.line : null}
                 onSelectLine={cite}
                 onRun={runTests}
+                onAiEdit={(selection, instruction) => api.edit(repo.language, code[active] ?? '', selection, instruction)}
               />
             </>
           ) : (
@@ -317,7 +318,10 @@ export default function RepoPage() {
               {shown && <TestResults shown={shown} />}
             </div>
           )}
-          <p className="muted small saved-note">Your edits and review draft are saved in this browser.</p>
+          <p className="muted small saved-note">
+            Your edits and review draft are saved in this browser.
+            {unlocked && ' Select code to describe a change and have AI write it.'}
+          </p>
         </div>
 
         <aside className="panel">

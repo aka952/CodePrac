@@ -57,6 +57,8 @@ All endpoints need an `X-User-Id: <uuid>` header (the frontend generates one in 
 | POST | `/api/exercises/{slug}/attempts` | `{answer}` or `{giveUp:true}` | solution revealed when correct, on give-up, or after 3 attempts |
 | POST | `/api/runs` | `{language, code}` | `429` + `Retry-After` when rate limited, `503` when all slots busy |
 | GET | `/api/languages` | | configured sandbox languages |
+| GET | `/api/points` | | the user's points: `{total, snippets, repos}` |
+| POST | `/api/edits` | `{language, code, selection, instruction}` | inline AI edit: returns `{replacement, note}` for the selected text. Makes only the change described; `note` explains when nothing was changed. Rate limited; needs `ANTHROPIC_API_KEY` |
 | GET | `/api/repos` | | repo exercise summaries + status (`SOLVED` = all hidden tests passed) |
 | GET | `/api/repos/{slug}` | | project files + task; `issues` only once revealed (graded review or skip) |
 | POST | `/api/repos/{slug}/reveal` | | skip the review: reveal the issues and unlock fixing, no AI call |
@@ -163,9 +165,9 @@ cd backend && mvn test
 | `SANDBOX_MAX_CONCURRENT` | `4` |
 | `RUNS_PER_MINUTE` | `20` per user |
 | `WARM_ON_STARTUP` | `true` |
-| `ANTHROPIC_API_KEY` | unset (review grading and Ask AI disabled) |
+| `ANTHROPIC_API_KEY` | unset (review grading, Ask AI and inline AI edits disabled) |
 | `REVIEW_MODEL` | `claude-opus-5-5` |
-| `ASSISTANT_MODEL` | `claude-opus-5-5` (Ask AI) |
+| `ASSISTANT_MODEL` | `claude-opus-5-5` (Ask AI and inline AI edits) |
 
 Limits (memory, pids, timeouts, output cap) live in `application.yml` under `sandbox:`.
 

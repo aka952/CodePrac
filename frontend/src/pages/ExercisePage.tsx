@@ -100,7 +100,7 @@ export default function ExercisePage() {
       <div className="workspace">
         <div className="code-col">
           <div className="code-bar">
-            <span>{unlocked ? 'Experiment mode: edit and run (Ctrl/⌘ + Enter)' : isSpotBug ? 'Click the buggy line' : 'Read only until you answer'}</span>
+            <span>{unlocked ? 'Experiment mode: edit and run (Ctrl/⌘ + Enter). Select code to edit it with AI' : isSpotBug ? 'Click the buggy line' : 'Read only until you answer'}</span>
             {unlocked && modified && <button className="link" onClick={() => setCode(ex.code)}>Reset code</button>}
           </div>
           <CodeEditor
@@ -113,6 +113,7 @@ export default function ExercisePage() {
             answerLine={answerLine}
             onSelectLine={setLine}
             onRun={execute}
+            onAiEdit={(selection, instruction) => api.edit(ex.language, code, selection, instruction)}
           />
           {unlocked && (
             <div className="run-panel">
