@@ -145,9 +145,22 @@ export class ApiError extends Error {
   }
 }
 
+export interface Me {
+  user: { name: string | null; email: string | null; picture: string | null } | null
+  devHeader: boolean
+  googleConfigured: boolean
+}
+
+/** Fired on window when the server says the session is gone (401), so the app can show the sign-in screen. */
+export const SIGNED_OUT_EVENT = 'codecomp:signed-out'
+
+// Dev and test only: when the backend runs with AUTH_DEV_HEADER, a random id in localStorage stands in for sign-in.
+let devHeader = false
+export const setDevHeaderMode = (on: boolean) => { devHeader = on }
+
 const USER_KEY = 'codecomp.user'
 
-function userId(): string {
+function devUserId(): string {
   let id = localStorage.getItem(USER_KEY)
   if (!id) {
     id = crypto.randomUUID?.() ??
@@ -158,11 +171,19 @@ function userId(): string {
   return id
 }
 
+/** The CSRF token the server keeps in a readable cookie; it must be echoed in a header on every POST. */
+function csrfToken(): string | undefined {
+  return document.cookie.split('; ').find(c => c.startsWith('XSRF-TOKEN='))?.slice('XSRF-TOKEN='.length)
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': userId(), ...init.headers },
-  })
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (devHeader) headers['X-User-Id'] = devUserId()
+  const token = csrfToken()
+  if (token && init.method && init.method !== 'GET') headers['X-XSRF-TOKEN'] = decodeURIComponent(token)
+  const res = await fetch(`/api${path}`, { ...init, headers: { ...headers, ...init.headers } })
+  if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(SIGNED_OUT_EVENT))
+  if (res.status === 204) return undefined as T
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     throw new ApiError(res.status, body?.detail ?? body?.message ?? res.statusText)
@@ -178,6 +199,8 @@ const pointsMayHaveChanged = <T,>(result: T): T => {
 }
 
 export const api = {
+  me: () => request<Me>('/auth/me'),
+  logout: () => request<void>('/auth/logout', { method: 'POST' }),
   points: () => request<PointsSummary>('/points'),
   exercises: () => request<ExerciseSummary[]>('/exercises'),
   exercise: (slug: string) => request<ExerciseView>(`/exercises/${encodeURIComponent(slug)}`),

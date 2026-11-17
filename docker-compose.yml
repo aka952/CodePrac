@@ -22,6 +22,10 @@ services:
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-}
       RUNS_PER_MINUTE: ${RUNS_PER_MINUTE:-20}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # local development without Google credentials only: AUTH_DEV_HEADER=true docker compose up
+      AUTH_DEV_HEADER: ${AUTH_DEV_HEADER:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

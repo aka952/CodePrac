@@ -1,5 +1,6 @@
 package dev.codecomp.web;
 
+import dev.codecomp.auth.CurrentUser;
 import dev.codecomp.exercise.Exercise.Difficulty;
 import dev.codecomp.exercise.ExerciseService;
 import dev.codecomp.repo.CodeEditService;
@@ -29,7 +30,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,8 +42,6 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api")
 class ApiController {
-
-    private static final String USER = "X-User-Id";
 
     private final ExerciseService exercises;
     private final RunService runs;
@@ -63,71 +61,71 @@ class ApiController {
     Set<String> languages() { return new TreeSet<>(sandbox.languages()); }
 
     @GetMapping("/exercises")
-    List<ExerciseSummary> list(@RequestHeader(USER) UUID user,
+    List<ExerciseSummary> list(@CurrentUser UUID user,
                                @RequestParam(name = "language", required = false) String language,
                                @RequestParam(name = "difficulty", required = false) Difficulty difficulty) {
         return exercises.list(user, language, difficulty);
     }
 
     @GetMapping("/exercises/{slug}")
-    ExerciseView get(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
+    ExerciseView get(@CurrentUser UUID user, @PathVariable("slug") String slug) {
         return exercises.get(user, slug);
     }
 
     @PostMapping("/exercises/{slug}/attempts")
-    AttemptResult attempt(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug, @Valid @RequestBody AttemptRequest req) {
+    AttemptResult attempt(@CurrentUser UUID user, @PathVariable("slug") String slug, @Valid @RequestBody AttemptRequest req) {
         return exercises.attempt(user, slug, req);
     }
 
     @PostMapping("/runs")
-    RunResponse run(@RequestHeader(USER) UUID user, @Valid @RequestBody RunRequest req) {
+    RunResponse run(@CurrentUser UUID user, @Valid @RequestBody RunRequest req) {
         return runs.run(user, req.language(), req.code());
     }
 
     @PostMapping("/edits")
-    EditResult edit(@RequestHeader(USER) UUID user, @Valid @RequestBody EditRequest req) {
+    EditResult edit(@CurrentUser UUID user, @Valid @RequestBody EditRequest req) {
         return edits.edit(user, req);
     }
 
     @GetMapping("/points")
-    PointsSummary points(@RequestHeader(USER) UUID user) {
+    PointsSummary points(@CurrentUser UUID user) {
         int snippets = exercises.totalPoints(user);
         int repoPoints = repos.totalPoints(user);
         return new PointsSummary(snippets + repoPoints, snippets, repoPoints);
     }
 
     @GetMapping("/repos")
-    List<RepoSummary> repos(@RequestHeader(USER) UUID user) {
+    List<RepoSummary> repos(@CurrentUser UUID user) {
         return repos.list(user);
     }
 
     @GetMapping("/repos/{slug}")
-    RepoView repo(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
+    RepoView repo(@CurrentUser UUID user, @PathVariable("slug") String slug) {
         return repos.get(user, slug);
     }
 
     @PostMapping("/repos/{slug}/reviews")
-    ReviewResult review(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug, @Valid @RequestBody ReviewRequest req) {
+    ReviewResult review(@CurrentUser UUID user, @PathVariable("slug") String slug, @Valid @RequestBody ReviewRequest req) {
         return repos.review(user, slug, req.review());
     }
 
     @PostMapping("/repos/{slug}/reveal")
-    RepoView reveal(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
+    RepoView reveal(@CurrentUser UUID user, @PathVariable("slug") String slug) {
         return repos.reveal(user, slug);
     }
 
     @GetMapping("/repos/{slug}/test-runs")
-    List<TestRunSummary> testRuns(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug) {
+    List<TestRunSummary> testRuns(@CurrentUser UUID user, @PathVariable("slug") String slug) {
         return repos.testRuns(user, slug);
     }
 
     @PostMapping("/repos/{slug}/questions")
-    QuestionAnswer ask(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug, @Valid @RequestBody QuestionRequest req) {
+    QuestionAnswer ask(@CurrentUser UUID user, @PathVariable("slug") String slug, @Valid @RequestBody QuestionRequest req) {
         return repos.ask(user, slug, req.question());
     }
 
     @PostMapping("/repos/{slug}/test-runs")
-    TestRunResult testRun(@RequestHeader(USER) UUID user, @PathVariable("slug") String slug, @Valid @RequestBody TestRunRequest req) {
+    TestRunResult testRun(@CurrentUser UUID user, @PathVariable("slug") String slug, @Valid @RequestBody TestRunRequest req) {
         return repos.runTests(user, slug, req.files());
     }
 }

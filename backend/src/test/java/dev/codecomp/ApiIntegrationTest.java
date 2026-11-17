@@ -39,6 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {
         "app.warm-on-startup=false",
+        "app.auth.dev-header=true",
         "app.runs-per-minute=2",
         "spring.datasource.url=jdbc:h2:mem:api;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
 })
@@ -197,7 +198,8 @@ class ApiIntegrationTest {
 
     @Test
     void rejectsBadRequests() throws Exception {
-        mvc.perform(get("/api/exercises")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/exercises")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/exercises").header("X-User-Id", "not-a-uuid")).andExpect(status().isUnauthorized());
         run("cobol", "DISPLAY 'HI'").andExpect(status().isBadRequest());
         mvc.perform(get("/api/exercises/nope").header("X-User-Id", user)).andExpect(status().isNotFound());
     }

@@ -2,14 +2,18 @@
 
 One VM running Docker Compose: Caddy (HTTP/HTTPS) → nginx (frontend) → Spring Boot backend → Postgres, with user code sandboxed under gVisor. It fits in OCI's Always Free allowance.
 
-> **Before a public launch:** there is no sign-in yet (anyone can claim any user id) and no monthly cap on Claude API spend. This setup is fine for a private or demo deployment. See `docs/PRODUCT_PLAN.md`, Phases 1 and 3.
+> **Before a public launch:** there is no monthly cap on Claude API spend yet. See `docs/PRODUCT_PLAN.md`, Phase 3.
+>
+> **Sign-in needs a domain.** Everyone signs in with Google, and Google only accepts HTTPS redirect addresses for a public server. Plan on step 5 (a domain with HTTPS), not plain HTTP on the IP.
 
 ## What you need
 
 - An OCI account
 - The code on GitHub (`https://github.com/aka952/CodePrac`), including this branch
 - An SSH key pair on your computer (`ssh-keygen -t ed25519` if you don't have one)
-- Optional: a domain name (for HTTPS) and an Anthropic API key (for review grading and Ask AI)
+- A domain name (needed for HTTPS, which Google sign-in requires)
+- A Google account, to create the sign-in credentials
+- Optional: an Anthropic API key (for review grading, Ask AI and inline AI edits)
 
 ## 1. Create the VM (OCI console)
 
@@ -80,6 +84,24 @@ Then open `http://<public-ip>/`.
 
 Caddy gets and renews a Let's Encrypt certificate by itself. This needs ports 80 and 443 reachable from the internet (step 2).
 
+## 5b. Google sign-in
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/), create a project (or pick one).
+2. **APIs & Services → OAuth consent screen:** user type **External**; fill in the app name and your email. The `openid`, `email` and `profile` scopes are all the app uses, and they need no Google review.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID:** application type **Web application**.
+4. Under **Authorized redirect URIs**, add exactly:
+   `https://<your-domain>/api/auth/oauth2/code/google`
+5. Copy the client ID and client secret into `.env`:
+   ```
+   GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...
+   ```
+6. `docker compose up -d`
+
+While the consent screen is in **Testing** mode, only the Google accounts you list under **Test users** can sign in. Choose **Publish app** to let anyone sign in.
+
+For local development, add `http://localhost:3000/api/auth/oauth2/code/google` as a second redirect URI on the same client (Google allows plain HTTP for localhost), or run without Google: `AUTH_DEV_HEADER=true docker compose up -d`, which lets the browser pick its own user id. Never set that on a public server; the production compose file forces it off.
+
 ## 6. Backups
 
 `deploy/oci/backup.sh` dumps the database to `~/codecomp-backups/` and keeps 14 days. Run it nightly:
@@ -121,4 +143,7 @@ Database migrations run automatically when the backend starts.
 | Every code run fails or times out | gVisor problem on this machine. Add `SANDBOX_RUNTIME=` (empty) to `.env`, run `docker compose up -d`, and note that user code is then isolated by plain Docker only |
 | Backend can't log in to Postgres after changing the password | Postgres only reads `POSTGRES_PASSWORD` on first start. Change it inside the database too, or (losing all data) `docker compose down -v` and start again |
 | Review grading / Ask AI return "not configured" | `ANTHROPIC_API_KEY` is not set in `.env` |
+| Sign-in page says sign-in is not configured | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` missing from `.env` |
+| Google shows "redirect_uri_mismatch" | The redirect URI in Google Cloud Console must match `https://<your-domain>/api/auth/oauth2/code/google` exactly, including `https` |
+| Everyone is signed out after an update | Sessions live in the backend's memory, so a backend restart ends them. Users just sign in again |
 | HTTPS certificate not issued | DNS doesn't point at the VM yet, or port 80/443 is closed; see `docker compose logs caddy` |

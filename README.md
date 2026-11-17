@@ -29,7 +29,7 @@ docker pull python:3.12-alpine && docker pull eclipse-temurin:21-jdk-alpine   # 
 docker compose up --build
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. Signing in needs Google credentials (see [Google sign-in](docs/DEPLOY_OCI.md#5b-google-sign-in)). To try it locally without them, start it with `AUTH_DEV_HEADER=true docker compose up --build`.
 
 Repo review grading calls the Claude API. Export `ANTHROPIC_API_KEY` before `docker compose up` to enable it; without a key everything else works: reviews return `503` and users can skip straight to fixing.
 
@@ -48,7 +48,16 @@ Single-VM production setup (Caddy, gVisor sandbox, backups) for Oracle Cloud: se
 
 ## API
 
-All endpoints need an `X-User-Id: <uuid>` header (the frontend generates one in localStorage; real auth is phase 2).
+Every endpoint except `/api/auth/*` requires a signed-in user. People sign in with Google; the session is an HTTP-only cookie, and `POST` requests must send the `XSRF-TOKEN` cookie's value back in an `X-XSRF-TOKEN` header. Unauthenticated calls get `401`.
+
+For local development and the test suite, `AUTH_DEV_HEADER=true` makes the backend accept an `X-User-Id: <uuid>` header instead (the frontend then generates one in localStorage). The production compose file forces it off.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/auth/me` | `{user, devHeader, googleConfigured}`; `user` is null when not signed in |
+| GET | `/api/auth/oauth2/authorization/google` | starts Google sign-in (a browser redirect, not an API call) |
+| POST | `/api/auth/logout` | ends the session, `204` |
+
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
@@ -168,6 +177,8 @@ cd backend && mvn test
 | `SANDBOX_MAX_CONCURRENT` | `4` |
 | `RUNS_PER_MINUTE` | `20` per user |
 | `WARM_ON_STARTUP` | `true` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset: nobody can sign in. See [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md#5b-google-sign-in) |
+| `AUTH_DEV_HEADER` | `false`. `true` accepts an `X-User-Id` header instead of sign-in: local development only |
 | `ANTHROPIC_API_KEY` | unset (review grading, Ask AI and inline AI edits disabled) |
 | `REVIEW_MODEL` | `claude-opus-5-5` |
 | `ASSISTANT_MODEL` | `claude-opus-5-5` (Ask AI and inline AI edits) |
