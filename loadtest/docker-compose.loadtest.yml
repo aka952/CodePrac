@@ -1,0 +1,6 @@
+# A separate copy of the stack for load testing, with its own database, on port 3100.
+#   docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up -d --build
+services:
+  frontend:
+    ports: !override
+      - "3100:80"

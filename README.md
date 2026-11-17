@@ -154,6 +154,9 @@ cd backend && mvn test
 - `RepoExercisesTest`: every repo exercise against real Docker: hidden tests fail on the original code, pass on the reference solution
 - `SandboxEscapeTest`: hostile programs against real Docker. Use `SANDBOX_PYTHON_IMAGE`, `SANDBOX_JAVA_IMAGE` and `SANDBOX_RUNTIME` to point it at other images or gVisor.
 
+## Load test
+
+`loadtest/loadtest.py` simulates users running uncached code against an isolated copy of the stack and steps the user count up until the sandbox saturates. See [loadtest/README.md](loadtest/README.md). On an Apple M4 laptop with the default 4 sandbox slots it sustained about 5 runs per second, with all runs succeeding up to that point and `503`s beyond it.
 
 ## Configuration
 

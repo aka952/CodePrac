@@ -1,0 +1,43 @@
+# Load test
+
+Measures how many users running code one server can take. The sandbox is the bottleneck, so the test is about code runs: Python snippets, Java snippets and repo test runs, all with never-seen-before code so the result cache cannot help.
+
+## Run it
+
+Start a separate copy of the stack so test data stays out of your normal database (it listens on port 3100):
+
+```bash
+docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up -d --build
+docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml logs backend | grep verified   # wait for 5 lines
+```
+
+Run the test (Python 3.9+, no packages needed):
+
+```bash
+python3 loadtest/loadtest.py                        # ramp: 5, 10, 20, 40, 60, 80 users, 30 seconds each
+python3 loadtest/loadtest.py --stages 20 --hogs 4   # 20 normal users while 4 others run infinite loops
+python3 loadtest/loadtest.py --help
+```
+
+Remove the copy afterwards, including its database:
+
+```bash
+docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml down -v
+```
+
+## Reading the output
+
+| Column | Meaning |
+|---|---|
+| `users` | simulated users in this stage, each waiting 4-8 seconds between runs |
+| `ok/s` | successful runs per second |
+| `ok %` | share of runs that succeeded |
+| `503` | runs refused because all sandbox slots stayed busy for 3 seconds |
+| `429` | runs refused by the per-user rate limit (20 a minute) |
+| `p50 s` / `p95 s` | median and 95th-percentile response time of successful runs |
+
+The server is past its limit at the first stage where `ok %` drops below 100 or `p95` climbs past a few seconds.
+
+The test users run code far more often than real ones (every 4-8 seconds, against perhaps every 30-60), so one test user stands for several real ones. Convert through `ok/s`: the sustainable runs per second multiplied by how often a real user runs code.
+
+To test a different capacity setting, set `SANDBOX_MAX_CONCURRENT` when starting the stack.
