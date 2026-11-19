@@ -2,53 +2,48 @@ package dev.codecomp.run;
 
 import dev.codecomp.sandbox.RunResult;
 import dev.codecomp.sandbox.Sandbox;
-import dev.codecomp.web.Api.RunResponse;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
-import java.util.UUID;
+import java.util.Optional;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+/** The result cache and the sandbox call. Users' runs reach the sandbox through the queue (JobService, JobWorker). */
 @Service
 public class RunService {
 
     private final Sandbox sandbox;
     private final RunCacheRepository cache;
-    private final RateLimiter limiter;
 
-    public RunService(Sandbox sandbox, RunCacheRepository cache, RateLimiter limiter) {
+    public RunService(Sandbox sandbox, RunCacheRepository cache) {
         this.sandbox = sandbox;
         this.cache = cache;
-        this.limiter = limiter;
     }
 
-    public RunResponse run(UUID user, String language, String code) {
-        if (!sandbox.languages().contains(language)) throw new Sandbox.UnsupportedLanguageException(language);
-        var hash = hash(language, code);
-        var hit = cache.findById(hash);
-        if (hit.isPresent()) return RunResponse.of(hit.get().toResult(), true);
-        limiter.acquire(user);
-        return RunResponse.of(executeAndCache(hash, language, code), false);
+    public Optional<RunResult> cached(String language, String code) {
+        return cache.findById(hash(language, code)).map(RunCacheEntry::toResult);
     }
 
-    public RunResult runTrusted(String language, String code) {
-        var hash = hash(language, code);
-        return cache.findById(hash).map(RunCacheEntry::toResult).orElseGet(() -> executeAndCache(hash, language, code));
-    }
-
-    private RunResult executeAndCache(String hash, String language, String code) {
+    /** Runs the code in the sandbox and caches the result when it depends only on the code. Worker side only. */
+    public RunResult execute(String language, String code) {
         var result = sandbox.run(language, code);
         if (result.cacheable()) {
             try {
-                cache.save(new RunCacheEntry(hash, language, result));
+                cache.save(new RunCacheEntry(hash(language, code), language, result));
             } catch (DataIntegrityViolationException ignored) {
+                // another worker cached the same code first
             }
         }
         return result;
+    }
+
+    /** Cached result or a fresh run, for the app's own checks (warm-up, exercise verification). Worker side only. */
+    public RunResult runTrusted(String language, String code) {
+        return cached(language, code).orElseGet(() -> execute(language, code));
     }
 
     static String hash(String language, String code) {

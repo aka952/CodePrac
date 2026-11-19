@@ -11,11 +11,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+/** Pulls the sandbox images, runs every exercise to fill the cache, and checks the repo exercises. Worker side only. */
 @Component
 @Order(2)
+@ConditionalOnExpression("'${app.role}' == 'all' or '${app.role}' == 'worker'")
 class SandboxWarmer implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxWarmer.class);

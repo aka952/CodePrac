@@ -176,9 +176,12 @@ function csrfToken(): string | undefined {
   return document.cookie.split('; ').find(c => c.startsWith('XSRF-TOKEN='))?.slice('XSRF-TOKEN='.length)
 }
 
+function authHeaders(): Record<string, string> {
+  return devHeader ? { 'X-User-Id': devUserId() } : {}
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (devHeader) headers['X-User-Id'] = devUserId()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() }
   const token = csrfToken()
   if (token && init.method && init.method !== 'GET') headers['X-XSRF-TOKEN'] = decodeURIComponent(token)
   const res = await fetch(`/api${path}`, { ...init, headers: { ...headers, ...init.headers } })
@@ -193,9 +196,71 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 /** Fired on window whenever an action may have changed the user's points, so the top bar can refresh its total. */
 export const POINTS_EVENT = 'codecomp:points'
+export const notifyPointsChanged = () => window.dispatchEvent(new Event(POINTS_EVENT))
 const pointsMayHaveChanged = <T,>(result: T): T => {
-  window.dispatchEvent(new Event(POINTS_EVENT))
+  notifyPointsChanged()
   return result
+}
+
+export type JobStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'FAILED'
+
+/** A queued code run. `id` is null when the result came straight from the cache. */
+export interface JobView<T> {
+  id: string | null
+  status: JobStatus
+  position: number | null
+  result: T | null
+  error: string | null
+}
+
+/** Button text while waiting for a run. */
+export const waitingLabel = (job: JobView<unknown> | null, running: string) =>
+  job?.status === 'QUEUED' ? (job.position ? `Queued, #${job.position} in line` : 'Queued') : running
+
+/**
+ * Resolves with the result of a submitted run. Progress (place in the queue, running) arrives over Server-Sent Events.
+ * The stream is read with fetch rather than EventSource so it carries the same headers as every other request.
+ * If the stream drops before the job finishes it reconnects; the server sends the current state first, so nothing is missed.
+ */
+export async function followJob<T>(job: JobView<T>, onUpdate?: (job: JobView<T>) => void): Promise<T> {
+  let current = job
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (current.status === 'DONE') return current.result as T
+    if (current.status === 'FAILED') throw new ApiError(500, current.error ?? 'The run failed')
+    onUpdate?.(current)
+    try {
+      current = await readJobEvents(current.id!, current, update => {
+        current = update
+        if (update.status === 'QUEUED' || update.status === 'RUNNING') onUpdate?.(update)
+      })
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 404)) throw e
+      await new Promise(resolve => setTimeout(resolve, Math.min(500 * (attempt + 1), 3000)))
+    }
+  }
+  throw new ApiError(504, 'Stopped waiting for the run. Reload the page to see whether it finished.')
+}
+
+async function readJobEvents<T>(id: string, latest: JobView<T>, onEvent: (job: JobView<T>) => void): Promise<JobView<T>> {
+  const res = await fetch(`/api/jobs/${encodeURIComponent(id)}/events`, { headers: { Accept: 'text/event-stream', ...authHeaders() } })
+  if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT_EVENT))
+  if (!res.ok || !res.body) throw new ApiError(res.status, res.statusText)
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) return latest
+    buffer += value
+    // events are separated by a blank line; each carries the job as JSON on its data: line
+    for (let end = buffer.indexOf('\n\n'); end >= 0; end = buffer.indexOf('\n\n')) {
+      const data = buffer.slice(0, end).split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5)).join('\n')
+      buffer = buffer.slice(end + 2)
+      if (data) {
+        latest = JSON.parse(data) as JobView<T>
+        onEvent(latest)
+      }
+    }
+  }
 }
 
 export const api = {
@@ -207,8 +272,9 @@ export const api = {
   attempt: (slug: string, body: { answer?: string; giveUp?: boolean }) =>
     request<AttemptResult>(`/exercises/${encodeURIComponent(slug)}/attempts`, { method: 'POST', body: JSON.stringify(body) })
       .then(pointsMayHaveChanged),
+  /** Answered at once for code that ran before; otherwise a queued job to pass to followJob. */
   run: (language: string, code: string) =>
-    request<RunResponse>('/runs', { method: 'POST', body: JSON.stringify({ language, code }) }),
+    request<JobView<RunResponse>>('/runs', { method: 'POST', body: JSON.stringify({ language, code }) }),
   edit: (language: string, code: string, selection: string, instruction: string) =>
     request<EditResult>('/edits', { method: 'POST', body: JSON.stringify({ language, code, selection, instruction }) }),
   repos: () => request<RepoSummary[]>('/repos'),
@@ -220,8 +286,7 @@ export const api = {
   ask: (slug: string, question: string) =>
     request<QuestionAnswer>(`/repos/${encodeURIComponent(slug)}/questions`, { method: 'POST', body: JSON.stringify({ question }) }),
   testRun: (slug: string, files: Record<string, string>) =>
-    request<TestRunResult>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) })
-      .then(pointsMayHaveChanged),
+    request<JobView<TestRunResult>>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) }),
 }
 
 export const TYPE_LABEL: Record<ExerciseType, string> = {

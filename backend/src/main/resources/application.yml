@@ -8,6 +8,8 @@ spring:
     open-in-view: false
     hibernate.ddl-auto: none
   threads.virtual.enabled: true
+  # with virtual threads every thread is a daemon; without this a worker (no web server) would exit right after starting
+  main.keep-alive: true
 
 server:
   port: ${PORT:8080}
@@ -21,6 +23,15 @@ server:
 management.endpoints.web.exposure.include: health
 
 app:
+  # all = API and worker in one process (local development, tests); api = web only; worker = runs the queue only;
+  # seed = loads the exercises into the database, then exits (run once per deploy, before api and worker)
+  role: ${APP_ROLE:all}
+  queue:
+    max-queued: ${QUEUE_MAX:500}
+    max-active-per-user: ${QUEUE_MAX_PER_USER:2}
+  worker:
+    threads: ${WORKER_THREADS:${SANDBOX_MAX_CONCURRENT:4}}
+    poll-ms: 250
   runs-per-minute: ${RUNS_PER_MINUTE:20}
   warm-on-startup: ${WARM_ON_STARTUP:true}
   review.model: ${REVIEW_MODEL:claude-opus-5-5}

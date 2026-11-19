@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
-  api, type IssueOutcome, type RepoIssue, type RepoSummary, type RepoView, type ReviewResult, type RunResponse, type TestCase,
-  type TestRunSummary,
+  api, followJob, type IssueOutcome, type JobView, notifyPointsChanged, type RepoIssue, type RepoSummary, type RepoView,
+  type ReviewResult, type RunResponse, type TestCase, type TestRunResult, type TestRunSummary, waitingLabel,
 } from '../api'
 import CodeEditor from '../components/CodeEditor'
 
@@ -80,6 +80,7 @@ export default function RepoPage() {
   const [runs, setRuns] = useState<TestRunSummary[]>([])
   const [showRuns, setShowRuns] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [progress, setProgress] = useState<JobView<TestRunResult> | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const [questionsLeft, setQuestionsLeft] = useState(0)
   const [points, setPoints] = useState(0)
@@ -176,7 +177,8 @@ export default function RepoPage() {
     setTesting(true)
     setTestError(null)
     try {
-      const run = await api.testRun(slug, Object.fromEntries(modified.map(p => [p, code[p]])))
+      const run = await followJob(await api.testRun(slug, Object.fromEntries(modified.map(p => [p, code[p]]))), setProgress)
+      notifyPointsChanged()
       setShown(run)
       setPoints(run.points)
       api.testRuns(slug).then(setRuns).catch(() => {})
@@ -184,6 +186,7 @@ export default function RepoPage() {
       setTestError((e as Error).message)
     } finally {
       setTesting(false)
+      setProgress(null)
     }
   }
 
@@ -291,7 +294,7 @@ export default function RepoPage() {
             <div className="run-panel">
               <div className="run-actions">
                 <button className="primary" onClick={runTests} disabled={testing}>
-                  {testing ? 'Running tests…' : '▶ Run hidden tests'}
+                  {testing ? waitingLabel(progress, 'Running tests…') : '▶ Run hidden tests'}
                 </button>
                 {runs.length > 0 && (
                   <button onClick={() => setShowRuns(s => !s)}>Previous runs ({runs.length})</button>

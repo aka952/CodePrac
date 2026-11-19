@@ -1,5 +1,6 @@
 package dev.codecomp.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import dev.codecomp.exercise.Exercise.Difficulty;
 import dev.codecomp.grading.Grader.ExerciseType;
 import dev.codecomp.repo.RepoContent.Issue;
@@ -14,6 +15,7 @@ import jakarta.validation.constraints.Size;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 public interface Api {
 
@@ -39,6 +41,12 @@ public interface Api {
             return new RunResponse(r.status(), r.stdout(), r.stderr(), r.exitCode(), r.durationMs(), r.truncated(), cached);
         }
     }
+
+    /**
+     * A queued code run. {@code status} is QUEUED, RUNNING, DONE or FAILED; {@code position} is set while QUEUED (1 = next);
+     * {@code result} is the run's response once DONE (a RunResponse or TestRunResult); {@code id} is null for a cache hit.
+     */
+    record JobView(UUID id, String status, Integer position, JsonNode result, String error) {}
 
     record RepoSummary(String slug, String title, String language, Difficulty difficulty, List<String> tags, int files, int issues,
                        String status, int points, int maxPoints) {}

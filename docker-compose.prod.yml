@@ -7,14 +7,24 @@ services:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
 
+  # one-off: no restart policy, it exits when the exercises are loaded
+  seed:
+    environment:
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
   backend:
+    restart: unless-stopped
+    environment:
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # never trust the dev header in production, whatever .env says
+      AUTH_DEV_HEADER: "false"
+
+  worker:
     restart: unless-stopped
     environment:
       DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       # gVisor by default: user code shares this machine with the database. Set SANDBOX_RUNTIME= (empty) to fall back to runc.
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME-runsc}
-      # never trust the dev header in production, whatever .env says
-      AUTH_DEV_HEADER: "false"
 
   frontend:
     restart: unless-stopped

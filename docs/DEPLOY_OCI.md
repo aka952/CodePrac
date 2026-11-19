@@ -1,6 +1,6 @@
 # Deploying to Oracle Cloud (OCI)
 
-One VM running Docker Compose: Caddy (HTTP/HTTPS) → nginx (frontend) → Spring Boot backend → Postgres, with user code sandboxed under gVisor. It fits in OCI's Always Free allowance.
+One VM running Docker Compose: Caddy (HTTP/HTTPS) → nginx (frontend) → Spring Boot API → Postgres, plus a worker service that takes queued code runs and executes them sandboxed under gVisor. It fits in OCI's Always Free allowance.
 
 > **Before a public launch:** there is no monthly cap on Claude API spend yet. See `docs/PRODUCT_PLAN.md`, Phase 3.
 >
@@ -70,8 +70,8 @@ The first build takes 10–20 minutes, almost all of it Maven downloading depend
 Check it:
 
 ```bash
-docker compose ps                                          # four services, all "Up"
-docker compose logs backend | grep -E "verified|WARN"      # both repo exercises "verified"
+docker compose ps                                          # five services, all "Up"
+docker compose logs worker | grep -E "verified|WARN"       # every repo exercise "verified"
 ```
 
 Then open `http://<public-ip>/`.
@@ -140,6 +140,8 @@ Database migrations run automatically when the backend starts.
 |---|---|
 | Site unreachable, but `curl localhost` works on the VM | One of the two firewalls: the VCN security list (step 2) or the VM's iptables (re-run the setup script) |
 | `required variable POSTGRES_PASSWORD is missing` | `.env` is missing or not in the repository root |
+| `service "seed" didn't complete successfully`; backend and worker never start | Loading the exercises failed (bad exercise YAML, or no database connection): `docker compose logs seed` |
+| Runs stay "Queued" forever | The worker is not running: `docker compose ps worker`, then `docker compose logs worker` |
 | Every code run fails or times out | gVisor problem on this machine. Add `SANDBOX_RUNTIME=` (empty) to `.env`, run `docker compose up -d`, and note that user code is then isolated by plain Docker only |
 | Backend can't log in to Postgres after changing the password | Postgres only reads `POSTGRES_PASSWORD` on first start. Change it inside the database too, or (losing all data) `docker compose down -v` and start again |
 | Review grading / Ask AI return "not configured" | `ANTHROPIC_API_KEY` is not set in `.env` |

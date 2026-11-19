@@ -9,16 +9,23 @@ Read a snippet, **commit to a prediction**, get graded, then **edit and run the 
 - Code runs in throwaway Docker containers: no network, read-only FS, non-root, CPU/memory/PID/time/output limits
 - Results cached by `sha256(language + code)`, so unchanged exercise code never hits the sandbox twice
 
-## Architecture (MVP)
+## Architecture
 
 ```
-React + TS + Monaco (Vite) ── nginx ──/api──► Spring Boot 3.5 (Java 21, virtual threads)
-                                                 ├─ Postgres (Flyway): exercises, attempts, run_cache
+React + TS + Monaco (Vite) ── nginx ──/api──► backend: Spring Boot 3.5 API (Java 21, virtual threads)
+                                                 │   no Docker access
+                                                 ▼
+                                    Postgres (Flyway): content, progress, users, run_cache, run_jobs (the queue)
+                                                 ▲
+                                                 │   claims queued runs
+                                              worker: same jar, APP_ROLE=worker, no web server
                                                  └─ DockerSandbox ──docker run──► python:3.12-alpine / temurin:21-jdk-alpine
                                                        (one fresh hardened container per run)
 ```
 
-Runs are synchronous in the MVP, with a semaphore capping concurrent containers (`SANDBOX_MAX_CONCURRENT`) and a per-user sliding-window rate limit. Phase 2 swaps the direct call for a Kafka queue and separate executor workers; see the roadmap.
+**Code runs are queued.** `POST /api/runs` (and repo test runs) answers at once with `200` when the same code ran before (result cache). Otherwise it inserts a `run_jobs` row and answers `202` with a job id. The worker claims jobs oldest first with a conditional `UPDATE ... WHERE status = 'QUEUED'`, so concurrent workers never share a job, and runs at most `WORKER_THREADS` at a time. The browser follows its job over Server-Sent Events (`GET /api/jobs/{id}/events`): queue position, running, then the result. Each API instance checks Postgres every 250 ms with one query for all the jobs its browsers are waiting on.
+
+Workers send a heartbeat every 10 s; a job whose worker goes quiet for 60 s is put back in the queue (failed after 3 tries). Backpressure: at most 2 unfinished runs per user, and new runs are refused with `503` when 500 are already queued. A spike becomes waiting time instead of errors: in the load test, 200 runs submitted at the same instant all completed (see `loadtest/README.md`).
 
 ## Quick start
 
@@ -33,7 +40,7 @@ Open http://localhost:3000. Signing in needs Google credentials (see [Google sig
 
 Repo review grading calls the Claude API. Export `ANTHROPIC_API_KEY` before `docker compose up` to enable it; without a key everything else works: reviews return `503` and users can skip straight to fixing.
 
-On startup the backend seeds exercises from `backend/src/main/resources/exercises/*.yml`, pulls the sandbox images, and **pre-runs every exercise**. That warms the cache and logs a WARN if any `predict_output` answer doesn't match real output.
+On startup a one-off `seed` container (`APP_ROLE=seed`) loads the exercises from `backend/src/main/resources/exercises/*.yml` and `repos/*.yml` into the database, then exits. The backend and worker start only after it succeeds, so a broken exercise file stops the deploy. The worker then pulls the sandbox images and **pre-runs every exercise**. That warms the cache and logs a WARN if any `predict_output` answer doesn't match real output.
 
 ### Local dev without Compose
 
@@ -44,7 +51,7 @@ cd frontend && npm install && npm run dev  # http://localhost:5173, proxies /api
 
 ## Deploying
 
-Single-VM production setup (Caddy, gVisor sandbox, backups) for Oracle Cloud: see [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md).
+Single-VM production setup (Caddy, gVisor sandbox, backups) for Oracle Cloud: see [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md). The same setup on AWS (one EC2 instance defined in CDK, deployed by GitHub Actions): see [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
 
 ## API
 
@@ -64,7 +71,9 @@ For local development and the test suite, `AUTH_DEV_HEADER=true` makes the backe
 | GET | `/api/exercises?language=&difficulty=` | | summaries + `NEW/ATTEMPTED/SOLVED` |
 | GET | `/api/exercises/{slug}` | | code + question; `solution` only if already solved |
 | POST | `/api/exercises/{slug}/attempts` | `{answer}` or `{giveUp:true}` | solution revealed when correct, on give-up, or after 3 attempts |
-| POST | `/api/runs` | `{language, code}` | `429` + `Retry-After` when rate limited, `503` when all slots busy |
+| POST | `/api/runs` | `{language, code}` | `200` with the result if this code ran before, else `202` with a job (`{id, status, position, result, error}`). `429` when rate limited or the user already has 2 runs in progress; `503` when the queue is full |
+| GET | `/api/jobs/{id}` | | the job's current state; `404` unless it is the caller's |
+| GET | `/api/jobs/{id}/events` | | Server-Sent Events: one `job` event per change (QUEUED with position → RUNNING → DONE/FAILED with `result`), then the stream ends. Streams end after 45 s; reconnect if still running |
 | GET | `/api/languages` | | configured sandbox languages |
 | GET | `/api/points` | | the user's points: `{total, snippets, repos}` |
 | POST | `/api/edits` | `{language, code, selection, instruction}` | inline AI edit: returns `{replacement, note}` for the selected text. Makes only the change described; `note` explains when nothing was changed. Rate limited; needs `ANTHROPIC_API_KEY` |
@@ -72,7 +81,7 @@ For local development and the test suite, `AUTH_DEV_HEADER=true` makes the backe
 | GET | `/api/repos/{slug}` | | project files + task; `issues` only once revealed (graded review or skip) |
 | POST | `/api/repos/{slug}/reveal` | | skip the review: reveal the issues and unlock fixing, no AI call |
 | POST | `/api/repos/{slug}/reviews` | `{review}` | Claude grades the review against the planted issues; reveals them. Counts toward the run rate limit |
-| POST | `/api/repos/{slug}/test-runs` | `{files: {path: content}}` | edited files only; compiled with the hidden tests in the sandbox |
+| POST | `/api/repos/{slug}/test-runs` | `{files: {path: content}}` | edited files only; compiled with the hidden tests in the sandbox. Same `200`/`202` job response as `/api/runs`; the result is the test report |
 | GET | `/api/repos/{slug}/test-runs` | | the user's last 20 test runs for this exercise, newest first, with per-test results |
 | POST | `/api/repos/{slug}/questions` | `{question}` | Ask AI: general language questions only. `429` once the 5 questions for this exercise are used; needs `ANTHROPIC_API_KEY` |
 
@@ -136,10 +145,10 @@ Code is piped via stdin, never interpolated into the shell command.
 
 ### ⚠️ Know the trade-off
 
-The backend container mounts `/var/run/docker.sock`, which is effectively root on the host. That is fine for local and portfolio use. Before exposing this publicly:
+The **worker** container mounts `/var/run/docker.sock`, which is effectively root on the host. The API does not: taking over the API no longer means owning the server. The worker still runs on the same machine as the database, so before a large public launch:
 
-1. move execution into a separate **executor service** on its own nodes (Phase 2), so the API never holds the socket, and
-2. run executors with gVisor (`RuntimeClass: gvisor` on K8s) or Firecracker.
+1. run workers on their own machines, pointed at the same database, and
+2. keep gVisor on (`SANDBOX_RUNTIME=runsc`, the production default) or move to Firecracker.
 
 ## Adding repo exercises
 
@@ -161,11 +170,12 @@ cd backend && mvn test
 - `GraderTest`: normalization rules
 - `ApiIntegrationTest`: full Spring context on H2 with a fake sandbox and fake review grader: listing, hidden answers, reveal-after-3, give-up, caching, rate limiting, error codes, repo review/test-run endpoints
 - `RepoExercisesTest`: every repo exercise against real Docker: hidden tests fail on the original code, pass on the reference solution
+- `JobQueueIntegrationTest`: the queue on a real server: Server-Sent Events from running to done, queue positions, job ownership, the per-user cap, and recovery of jobs from a worker that died
 - `SandboxEscapeTest`: hostile programs against real Docker. Use `SANDBOX_PYTHON_IMAGE`, `SANDBOX_JAVA_IMAGE` and `SANDBOX_RUNTIME` to point it at other images or gVisor.
 
 ## Load test
 
-`loadtest/loadtest.py` simulates users running uncached code against an isolated copy of the stack and steps the user count up until the sandbox saturates. See [loadtest/README.md](loadtest/README.md). On an Apple M4 laptop with the default 4 sandbox slots it sustained about 5 runs per second, with all runs succeeding up to that point and `503`s beyond it.
+`loadtest/loadtest.py` simulates users running uncached code against an isolated copy of the stack, following each run's events until it finishes. It steps the user count up, or (`--spike N`) has N users submit at the same instant. See [loadtest/README.md](loadtest/README.md). On an Apple M4 laptop with 4 worker threads: about 5.5 runs per second, every run succeeding at all loads tested (overload shows up as waiting time), and a spike of 200 simultaneous runs fully absorbed in 48 s.
 
 ## Configuration
 
@@ -174,7 +184,11 @@ cd backend && mvn test
 | `DB_URL` / `DB_USER` / `DB_PASSWORD` | H2 file DB |
 | `SANDBOX_RUNTIME` | Docker default (`runc`); set `runsc` for gVisor |
 | `SANDBOX_PYTHON_IMAGE` / `SANDBOX_JAVA_IMAGE` | `python:3.12-alpine` / `eclipse-temurin:21-jdk-alpine` |
-| `SANDBOX_MAX_CONCURRENT` | `4` |
+| `SANDBOX_MAX_CONCURRENT` | `4`; also the default for `WORKER_THREADS` |
+| `APP_ROLE` | `all` (API, worker and seeding in one process: local development, tests). Compose runs `seed` (loads exercises, then exits), then `api` and `worker` as separate services |
+| `WORKER_THREADS` | runs a worker executes at once |
+| `QUEUE_MAX` | `500` queued runs, then new runs get `503` |
+| `QUEUE_MAX_PER_USER` | `2` unfinished runs per user, then `429` |
 | `RUNS_PER_MINUTE` | `20` per user |
 | `WARM_ON_STARTUP` | `true` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset: nobody can sign in. See [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md#5b-google-sign-in) |
@@ -187,8 +201,8 @@ Limits (memory, pids, timeouts, output cap) live in `application.yml` under `san
 
 ## Roadmap
 
-1. **Async execution**: `POST /runs` → Kafka `code-runs` → executor workers → `run-results` → SSE to the browser. Scale workers on consumer lag (KEDA).
+1. **Scaling execution**: done for one machine (Postgres-backed queue, separate worker, Server-Sent Events). Next: workers on their own machines, and Postgres `LISTEN/NOTIFY` instead of the 250 ms check. A broker such as Kafka only if Postgres becomes the bottleneck.
 2. **Hardening**: executors on a tainted EKS node group, gVisor RuntimeClass, NetworkPolicy deny-all, no IAM role, escape tests in CI.
-3. **Auth**: replace `X-User-Id` with real accounts (Spring Security + JWT/OAuth); Redis-backed rate limits.
+3. **Auth**: done (Google sign-in). Remaining: Redis-backed rate limits for several API instances, sessions that survive restarts.
 4. **Learning features**: spaced repetition, streaks, topic progress, "what-if" exercises that require editing code.
 5. **AI layer**: LLM grading of "explain this function" answers, generated hints.

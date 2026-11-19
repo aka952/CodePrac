@@ -114,7 +114,7 @@ class AuthIntegrationTest {
         assertThat(token).isNotNull();
         mvc.perform(post("/api/runs").session(session).cookie(new Cookie("XSRF-TOKEN", token.getValue()))
                         .header("X-XSRF-TOKEN", token.getValue()).contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isOk());
+                .andExpect(status().is2xxSuccessful());
     }
 
     @Test

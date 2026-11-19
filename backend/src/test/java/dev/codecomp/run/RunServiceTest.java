@@ -6,8 +6,6 @@ import dev.codecomp.sandbox.Sandbox;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -22,11 +20,9 @@ class RunServiceTest {
 
     final Sandbox sandbox = mock(Sandbox.class);
     final RunCacheRepository cache = mock(RunCacheRepository.class);
-    final RunService runs = new RunService(sandbox, cache, new RateLimiter(100));
-    final UUID user = UUID.randomUUID();
+    final RunService runs = new RunService(sandbox, cache);
 
     RunServiceTest() {
-        when(sandbox.languages()).thenReturn(Set.of("python"));
         when(cache.findById(anyString())).thenReturn(Optional.empty());
     }
 
@@ -37,8 +33,8 @@ class RunServiceTest {
         // e.g. the first run timed out because the sandbox image was still being pulled
         when(sandbox.run("python", "print(1)")).thenReturn(result(RunStatus.TIMEOUT), result(RunStatus.OK));
 
-        assertThat(runs.run(user, "python", "print(1)").status()).isEqualTo(RunStatus.TIMEOUT);
-        assertThat(runs.run(user, "python", "print(1)").status()).isEqualTo(RunStatus.OK);
+        assertThat(runs.execute("python", "print(1)").status()).isEqualTo(RunStatus.TIMEOUT);
+        assertThat(runs.execute("python", "print(1)").status()).isEqualTo(RunStatus.OK);
 
         verify(sandbox, times(2)).run("python", "print(1)");
         verify(cache, times(1)).save(any());
@@ -47,7 +43,7 @@ class RunServiceTest {
     @Test
     void sandboxErrorsAreNotCached() {
         when(sandbox.run("python", "x")).thenReturn(result(RunStatus.SANDBOX_ERROR));
-        runs.run(user, "python", "x");
+        runs.execute("python", "x");
         verify(cache, never()).save(any());
     }
 

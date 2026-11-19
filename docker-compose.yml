@@ -13,24 +13,61 @@ services:
       timeout: 3s
       retries: 10
 
-  backend:
+  # One-off job: loads the exercises into the database, then exits. backend and worker start only after it succeeds,
+  # so exactly one process seeds, however many API or worker instances run.
+  seed:
     build: ./backend
     environment:
+      APP_ROLE: seed
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      # the base config keeps the process alive for the worker; this one must exit when done
+      SPRING_MAIN_KEEP_ALIVE: "false"
       DB_URL: jdbc:postgresql://db:5432/codecomp
       DB_USER: codecomp
       DB_PASSWORD: codecomp
-      SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # The API. It queues code runs but never runs code itself, so it has no access to Docker.
+  backend:
+    build: ./backend
+    environment:
+      APP_ROLE: api
+      DB_URL: jdbc:postgresql://db:5432/codecomp
+      DB_USER: codecomp
+      DB_PASSWORD: codecomp
       RUNS_PER_MINUTE: ${RUNS_PER_MINUTE:-20}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       # local development without Google credentials only: AUTH_DEV_HEADER=true docker compose up
       AUTH_DEV_HEADER: ${AUTH_DEV_HEADER:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+
+  # Takes runs from the queue (the run_jobs table) and executes them in sandbox containers.
+  # Same image as the backend; only this service can reach the Docker daemon.
+  worker:
+    build: ./backend
+    environment:
+      APP_ROLE: worker
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      DB_URL: jdbc:postgresql://db:5432/codecomp
+      DB_USER: codecomp
+      DB_PASSWORD: codecomp
+      SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-}
+      SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-4}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
         condition: service_healthy
+      seed:
+        condition: service_completed_successfully
 
   frontend:
     build: ./frontend

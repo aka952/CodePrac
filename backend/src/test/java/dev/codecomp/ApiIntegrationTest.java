@@ -106,6 +106,22 @@ class ApiIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON).content("{\"answer\":\"" + answer + "\"}"));
     }
 
+    @Autowired
+    com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+
+    /** The result of a submitted run: at once for a cache hit, otherwise after waiting for the worker. */
+    com.fasterxml.jackson.databind.JsonNode finished(ResultActions submitted) throws Exception {
+        var job = objectMapper.readTree(submitted.andReturn().getResponse().getContentAsString());
+        for (int i = 0; i < 200 && !job.get("status").asText().equals("DONE"); i++) {
+            org.assertj.core.api.Assertions.assertThat(job.get("status").asText()).isNotEqualTo("FAILED");
+            Thread.sleep(50);
+            job = objectMapper.readTree(mvc.perform(get("/api/jobs/{id}", job.get("id").asText()).header("X-User-Id", user))
+                    .andReturn().getResponse().getContentAsString());
+        }
+        org.assertj.core.api.Assertions.assertThat(job.get("status").asText()).isEqualTo("DONE");
+        return job.get("result");
+    }
+
     ResultActions run(String language, String code) throws Exception {
         return mvc.perform(post("/api/runs").header("X-User-Id", user)
                 .contentType(MediaType.APPLICATION_JSON).content("{\"language\":\"" + language + "\",\"code\":\"" + code + "\"}"));
@@ -188,9 +204,12 @@ class ApiIntegrationTest {
     @Test
     void runsAreCachedAndRateLimited() throws Exception {
         int before = sandboxCalls.get();
-        run("python", "print(1)").andExpect(status().isOk()).andExpect(jsonPath("$.cached", is(false)));
-        run("python", "print(1)").andExpect(jsonPath("$.cached", is(true)));
-        run("python", "print(2)").andExpect(status().isOk());
+        var first = finished(run("python", "print(1)").andExpect(status().isAccepted()).andExpect(jsonPath("$.status", is("QUEUED"))));
+        org.assertj.core.api.Assertions.assertThat(first.get("cached").asBoolean()).isFalse();
+        // the worker cached the result, so the same code is answered at once without queueing
+        run("python", "print(1)").andExpect(status().isOk()).andExpect(jsonPath("$.status", is("DONE")))
+                .andExpect(jsonPath("$.id", nullValue())).andExpect(jsonPath("$.result.cached", is(true)));
+        finished(run("python", "print(2)").andExpect(status().isAccepted()));
         run("python", "print(3)").andExpect(status().isTooManyRequests()).andExpect(header().exists("Retry-After"));
         run("python", "print(1)").andExpect(status().isOk());
         org.assertj.core.api.Assertions.assertThat(sandboxCalls.get() - before).isEqualTo(2);
@@ -252,16 +271,16 @@ class ApiIntegrationTest {
 
     @Test
     void repoTestRunsReportEachHiddenTest() throws Exception {
-        json("/api/repos/java-checkout-service/test-runs", "{\"files\":{\"src/main/java/com/shop/Cart.java\":\"class Cart {}\"}}")
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.total", is(2)))
-                .andExpect(jsonPath("$.passed", is(1)))
-                .andExpect(jsonPath("$.allPassed", is(false)))
-                // the fake sandbox passes the same single test for the untouched code, so nothing was won
-                .andExpect(jsonPath("$.points", is(0)))
-                .andExpect(jsonPath("$.maxPoints", is(100)))
-                .andExpect(jsonPath("$.tests[1].name", is("breaks")))
-                .andExpect(jsonPath("$.tests[1].message", is("expected 1 but got 2")));
+        var r = finished(json("/api/repos/java-checkout-service/test-runs", "{\"files\":{\"src/main/java/com/shop/Cart.java\":\"class Cart {}\"}}")
+                .andExpect(status().isAccepted()));
+        org.assertj.core.api.Assertions.assertThat(r.get("total").asInt()).isEqualTo(2);
+        org.assertj.core.api.Assertions.assertThat(r.get("passed").asInt()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(r.get("allPassed").asBoolean()).isFalse();
+        // nothing was won: the untouched code's result is not cached here, so only a full pass would score
+        org.assertj.core.api.Assertions.assertThat(r.get("points").asInt()).isZero();
+        org.assertj.core.api.Assertions.assertThat(r.get("maxPoints").asInt()).isEqualTo(100);
+        org.assertj.core.api.Assertions.assertThat(r.at("/tests/1/name").asText()).isEqualTo("breaks");
+        org.assertj.core.api.Assertions.assertThat(r.at("/tests/1/message").asText()).isEqualTo("expected 1 but got 2");
     }
 
     @Test
@@ -269,7 +288,7 @@ class ApiIntegrationTest {
         mvc.perform(get("/api/repos/java-user-registry/test-runs").header("X-User-Id", user))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()", is(0)));
-        json("/api/repos/java-user-registry/test-runs", "{\"files\":{}}").andExpect(status().isOk());
+        finished(json("/api/repos/java-user-registry/test-runs", "{\"files\":{}}"));
         mvc.perform(get("/api/repos/java-user-registry/test-runs").header("X-User-Id", user))
                 .andExpect(jsonPath("$.length()", is(1)))
                 .andExpect(jsonPath("$[0].passed", is(1)))

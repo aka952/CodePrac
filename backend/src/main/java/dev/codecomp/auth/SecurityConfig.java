@@ -1,5 +1,6 @@
 package dev.codecomp.auth;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
@@ -44,6 +46,7 @@ import java.util.function.Supplier;
  * HTTP-only cookie, and state-changing requests must echo the CSRF token cookie in a header.
  */
 @Configuration
+@ConditionalOnWebApplication
 class SecurityConfig implements WebMvcConfigurer {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
@@ -80,6 +83,8 @@ class SecurityConfig implements WebMvcConfigurer {
     @Bean
     SecurityFilterChain security(HttpSecurity http, ObjectProvider<ClientRegistrationRepository> clients, UserAccounts accounts) throws Exception {
         http.authorizeHttpRequests(auth -> auth
+                        // async dispatches finish requests that were already authorized (Server-Sent Events); error dispatches render errors
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers("/api/auth/**", "/actuator/health").permitAll()
                         .anyRequest().authenticated())
                 // an API: answer 401 and let the page show its sign-in screen, instead of redirecting to a login page

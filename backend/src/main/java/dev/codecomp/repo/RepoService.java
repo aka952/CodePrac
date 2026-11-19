@@ -6,14 +6,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.codecomp.grading.Points;
 import dev.codecomp.repo.RepoContent.RepoFile;
 import dev.codecomp.repo.RepoSubmission.Kind;
+import dev.codecomp.run.JobService;
 import dev.codecomp.run.RateLimiter;
+import dev.codecomp.run.RunJob;
 import dev.codecomp.run.RunService;
 import dev.codecomp.sandbox.RunResult;
 import dev.codecomp.web.Api.IssueOutcome;
+import dev.codecomp.web.Api.JobView;
 import dev.codecomp.web.Api.QuestionAnswer;
 import dev.codecomp.web.Api.RepoSummary;
 import dev.codecomp.web.Api.RepoView;
 import dev.codecomp.web.Api.ReviewResult;
+import dev.codecomp.web.Api.RunResponse;
 import dev.codecomp.web.Api.RunResponse;
 import dev.codecomp.web.Api.TestCase;
 import dev.codecomp.web.Api.TestRunResult;
@@ -55,17 +59,19 @@ public class RepoService {
     private final RepoExerciseRepository repos;
     private final RepoSubmissionRepository submissions;
     private final RunService runs;
+    private final JobService jobs;
     private final RateLimiter limiter;
     private final ReviewGrader grader;
     private final SyntaxAssistant assistant;
     private final ObjectMapper json;
     private final Map<String, Integer> baselines = new ConcurrentHashMap<>();
 
-    RepoService(RepoExerciseRepository repos, RepoSubmissionRepository submissions, RunService runs, RateLimiter limiter,
+    RepoService(RepoExerciseRepository repos, RepoSubmissionRepository submissions, RunService runs, JobService jobs, RateLimiter limiter,
                 ReviewGrader grader, SyntaxAssistant assistant, ObjectMapper json) {
         this.repos = repos;
         this.submissions = submissions;
         this.runs = runs;
+        this.jobs = jobs;
         this.limiter = limiter;
         this.grader = grader;
         this.assistant = assistant;
@@ -103,20 +109,18 @@ public class RepoService {
     }
 
     /**
-     * How many hidden tests pass on the untouched code; those earn no points. Normally a run-cache hit, because every
-     * exercise is run at startup. If the sandbox cannot answer, nothing but a full pass scores.
+     * How many hidden tests pass on the untouched code; those earn no points. Read from the run cache, which the
+     * worker fills at startup. Until it has, nothing but a full pass scores.
      */
     private int baseline(RepoExercise r, RepoContent c) {
         var known = baselines.get(r.getSlug());
         if (known != null) return known;
-        try {
-            var result = runs.runTrusted(RepoSeeder.projectLanguage(r.getLanguage()), bundle(c, Map.of()));
-            int passed = (int) parseTests(result.stdout()).stream().filter(TestCase::passed).count();
-            if (result.cacheable()) baselines.put(r.getSlug(), passed);
-            return passed;
-        } catch (RuntimeException e) {
-            return Integer.MAX_VALUE;
-        }
+        // the API never runs code itself; the worker's startup check puts this result in the cache
+        var result = runs.cached(RepoSeeder.projectLanguage(r.getLanguage()), bundle(c, Map.of()));
+        if (result.isEmpty()) return Integer.MAX_VALUE;
+        int passed = (int) parseTests(result.get().stdout()).stream().filter(TestCase::passed).count();
+        baselines.put(r.getSlug(), passed);
+        return passed;
     }
 
     public RepoView get(UUID user, String slug) {
@@ -190,14 +194,25 @@ public class RepoService {
                 grade.extraFindings() == null ? List.of() : grade.extraFindings(), grade.overallFeedback());
     }
 
-    public TestRunResult runTests(UUID user, String slug, Map<String, String> edited) {
+    /** Recorded at once when the same code ran before; otherwise queued, and recorded by the worker. */
+    public JobView runTests(UUID user, String slug, Map<String, String> edited) {
         var r = find(slug);
         var c = content(r);
         var known = c.files().stream().map(RepoFile::path).collect(Collectors.toSet());
         var unknown = edited.keySet().stream().filter(p -> !known.contains(p)).toList();
         if (!unknown.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown project files: " + unknown);
 
-        var result = runs.run(user, RepoSeeder.projectLanguage(r.getLanguage()), bundle(c, edited));
+        var language = RepoSeeder.projectLanguage(r.getLanguage());
+        var bundle = bundle(c, edited);
+        return runs.cached(language, bundle)
+                .map(hit -> jobs.done(completeTestRun(user, slug, RunResponse.of(hit, true))))
+                .orElseGet(() -> jobs.enqueue(user, RunJob.Kind.REPO_TEST, language, bundle, slug));
+    }
+
+    /** Turns a finished run into test results, records it in the user's history and scores it. */
+    public TestRunResult completeTestRun(UUID user, String slug, RunResponse result) {
+        var r = find(slug);
+        var c = content(r);
         var tests = parseTests(result.stdout());
         int passed = (int) tests.stream().filter(TestCase::passed).count();
         boolean allPassed = !tests.isEmpty() && passed == tests.size() && result.exitCode() == 0;

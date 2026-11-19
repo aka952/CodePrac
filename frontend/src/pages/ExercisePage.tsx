@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, type AttemptResult, type ExerciseSummary, type ExerciseView, type RunResponse, type RunStatus, TYPE_LABEL } from '../api'
+import { api, type AttemptResult, type ExerciseSummary, type ExerciseView, followJob, type JobView, type RunResponse, type RunStatus, TYPE_LABEL, waitingLabel } from '../api'
 import CodeEditor from '../components/CodeEditor'
 
 const REVEAL_AFTER = 3
@@ -28,6 +28,7 @@ export default function ExercisePage() {
   const [code, setCode] = useState('')
   const [run, setRun] = useState<RunResponse | null>(null)
   const [running, setRunning] = useState(false)
+  const [progress, setProgress] = useState<JobView<RunResponse> | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -72,11 +73,12 @@ export default function ExercisePage() {
     setRunning(true)
     setRunError(null)
     try {
-      setRun(await api.run(ex.language, code))
+      setRun(await followJob(await api.run(ex.language, code), setProgress))
     } catch (e) {
       setRunError((e as Error).message)
     } finally {
       setRunning(false)
+      setProgress(null)
     }
   }
 
@@ -119,7 +121,7 @@ export default function ExercisePage() {
             <div className="run-panel">
               <div className="run-actions">
                 <button className="primary" onClick={execute} disabled={running}>
-                  {running ? 'Running…' : modified ? '▶ Run my version' : '▶ Run original'}
+                  {running ? waitingLabel(progress, 'Running…') : modified ? '▶ Run my version' : '▶ Run original'}
                 </button>
                 <span className="muted small">Sandboxed: no network, 256 MB, time-limited</span>
               </div>

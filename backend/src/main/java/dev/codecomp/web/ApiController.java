@@ -5,7 +5,8 @@ import dev.codecomp.exercise.Exercise.Difficulty;
 import dev.codecomp.exercise.ExerciseService;
 import dev.codecomp.repo.CodeEditService;
 import dev.codecomp.repo.RepoService;
-import dev.codecomp.run.RunService;
+import dev.codecomp.run.JobEvents;
+import dev.codecomp.run.JobService;
 import dev.codecomp.sandbox.Sandbox;
 import dev.codecomp.web.Api.AttemptRequest;
 import dev.codecomp.web.Api.AttemptResult;
@@ -21,11 +22,15 @@ import dev.codecomp.web.Api.RepoView;
 import dev.codecomp.web.Api.ReviewRequest;
 import dev.codecomp.web.Api.ReviewResult;
 import dev.codecomp.web.Api.RunRequest;
-import dev.codecomp.web.Api.RunResponse;
+import dev.codecomp.web.Api.JobView;
 import dev.codecomp.web.Api.TestRunRequest;
-import dev.codecomp.web.Api.TestRunResult;
 import dev.codecomp.web.Api.TestRunSummary;
 import jakarta.validation.Valid;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,6 +38,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Set;
@@ -41,18 +47,21 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api")
+@ConditionalOnWebApplication
 class ApiController {
 
     private final ExerciseService exercises;
-    private final RunService runs;
+    private final JobService jobs;
+    private final JobEvents events;
     private final Sandbox sandbox;
     private final RepoService repos;
     private final CodeEditService edits;
 
-    ApiController(ExerciseService exercises, RunService runs, Sandbox sandbox, RepoService repos, CodeEditService edits) {
+    ApiController(ExerciseService exercises, JobService jobs, JobEvents events, Sandbox sandbox, RepoService repos, CodeEditService edits) {
+        this.jobs = jobs;
+        this.events = events;
         this.edits = edits;
         this.exercises = exercises;
-        this.runs = runs;
         this.sandbox = sandbox;
         this.repos = repos;
     }
@@ -77,9 +86,26 @@ class ApiController {
         return exercises.attempt(user, slug, req);
     }
 
+    /** 200 with the result when the same code ran before; otherwise 202 with a queued job to follow. */
     @PostMapping("/runs")
-    RunResponse run(@CurrentUser UUID user, @Valid @RequestBody RunRequest req) {
-        return runs.run(user, req.language(), req.code());
+    ResponseEntity<JobView> run(@CurrentUser UUID user, @Valid @RequestBody RunRequest req) {
+        return submitted(jobs.submitSnippet(user, req.language(), req.code()));
+    }
+
+    @GetMapping("/jobs/{id}")
+    JobView job(@CurrentUser UUID user, @PathVariable("id") UUID id) {
+        return jobs.view(user, id);
+    }
+
+    /** Server-Sent Events: one "job" event per change of the job, ending once it is DONE or FAILED. */
+    @GetMapping(path = "/jobs/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    ResponseEntity<SseEmitter> jobEvents(@CurrentUser UUID user, @PathVariable("id") UUID id) {
+        // X-Accel-Buffering stops nginx from holding events back until the stream ends
+        return ResponseEntity.ok().cacheControl(CacheControl.noCache()).header("X-Accel-Buffering", "no").body(events.watch(user, id));
+    }
+
+    private static ResponseEntity<JobView> submitted(JobView job) {
+        return ResponseEntity.status("DONE".equals(job.status()) ? HttpStatus.OK : HttpStatus.ACCEPTED).body(job);
     }
 
     @PostMapping("/edits")
@@ -125,7 +151,7 @@ class ApiController {
     }
 
     @PostMapping("/repos/{slug}/test-runs")
-    TestRunResult testRun(@CurrentUser UUID user, @PathVariable("slug") String slug, @Valid @RequestBody TestRunRequest req) {
-        return repos.runTests(user, slug, req.files());
+    ResponseEntity<JobView> testRun(@CurrentUser UUID user, @PathVariable("slug") String slug, @Valid @RequestBody TestRunRequest req) {
+        return submitted(repos.runTests(user, slug, req.files()));
     }
 }
