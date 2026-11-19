@@ -1,0 +1,5 @@
+spring:
+  config.import: classpath:core.yml
+  # a one-off job: no web server, and the process exits once the seeders have run
+  main.web-application-type: none
+  main.keep-alive: false

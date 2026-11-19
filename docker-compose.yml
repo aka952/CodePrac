@@ -16,12 +16,10 @@ services:
   # One-off job: loads the exercises into the database, then exits. backend and worker start only after it succeeds,
   # so exactly one process seeds, however many API or worker instances run.
   seed:
-    build: ./backend
+    build:
+      context: ./backend
+      target: seed
     environment:
-      APP_ROLE: seed
-      SPRING_MAIN_WEB_APPLICATION_TYPE: none
-      # the base config keeps the process alive for the worker; this one must exit when done
-      SPRING_MAIN_KEEP_ALIVE: "false"
       DB_URL: jdbc:postgresql://db:5432/codecomp
       DB_USER: codecomp
       DB_PASSWORD: codecomp
@@ -31,9 +29,10 @@ services:
 
   # The API. It queues code runs but never runs code itself, so it has no access to Docker.
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      target: api
     environment:
-      APP_ROLE: api
       DB_URL: jdbc:postgresql://db:5432/codecomp
       DB_USER: codecomp
       DB_PASSWORD: codecomp
@@ -50,12 +49,12 @@ services:
         condition: service_completed_successfully
 
   # Takes runs from the queue (the run_jobs table) and executes them in sandbox containers.
-  # Same image as the backend; only this service can reach the Docker daemon.
+  # Its image holds only the worker code and the docker CLI; only this service can reach the Docker daemon.
   worker:
-    build: ./backend
+    build:
+      context: ./backend
+      target: worker
     environment:
-      APP_ROLE: worker
-      SPRING_MAIN_WEB_APPLICATION_TYPE: none
       DB_URL: jdbc:postgresql://db:5432/codecomp
       DB_USER: codecomp
       DB_PASSWORD: codecomp

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>dev.codecomp</groupId>
+        <artifactId>codecomp-parent</artifactId>
+        <version>0.1.0</version>
+    </parent>
+    <artifactId>codecomp-all-in-one</artifactId>
+    <description>API, worker and seed in one process: the integration tests and local development. Never deployed</description>
+
+    <properties>
+        <spring-boot.run.skip>false</spring-boot.run.skip>
+    </properties>
+
+    <dependencies>
+        <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-api</artifactId></dependency>
+        <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-worker</artifactId></dependency>
+        <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-seed</artifactId></dependency>
+        <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
+    </dependencies>
+</project>

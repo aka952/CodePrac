@@ -1,0 +1,39 @@
+# Settings every process shares: the database, and the sandbox languages (the API and the seed job need the
+# language names; the worker needs all of it). Each app's application.yml imports this file.
+spring:
+  application.name: codecomp
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/codecomp;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+  jpa:
+    open-in-view: false
+    hibernate.ddl-auto: none
+  threads.virtual.enabled: true
+
+sandbox:
+  docker: ${DOCKER_BIN:docker}
+  runtime: ${SANDBOX_RUNTIME:}
+  cpus: 1.0
+  memory-mb: 256
+  pids-limit: 64
+  tmpfs-mb: 64
+  output-limit-bytes: 65536
+  max-concurrent: ${SANDBOX_MAX_CONCURRENT:4}
+  queue-wait-ms: 3000
+  languages:
+    python:
+      image: ${SANDBOX_PYTHON_IMAGE:python:3.12-alpine}
+      file: main.py
+      command: exec python3 -I -B /tmp/main.py
+      timeout-ms: 5000
+    java:
+      image: ${SANDBOX_JAVA_IMAGE:eclipse-temurin:21-jdk-alpine}
+      file: Main.java
+      command: exec java -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:-UsePerfData -Xmx128m -Xss512k /tmp/Main.java
+      timeout-ms: 10000
+    java-project:
+      image: ${SANDBOX_JAVA_IMAGE:eclipse-temurin:21-jdk-alpine}
+      file: bundle.b64
+      command: base64 -d bundle.b64 > p.zip && unzip -q p.zip -d p && javac -J-XX:TieredStopAtLevel=1 -J-XX:+UseSerialGC -nowarn -d out $(find p -name '*.java') && exec java -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:-UsePerfData -Xmx128m -cp out RepoTests
+      timeout-ms: 20000

@@ -1,0 +1,6 @@
+spring:
+  config.import: classpath:core.yml, classpath:worker.yml
+  # no web server: the worker only talks to Postgres and Docker
+  main.web-application-type: none
+  # with virtual threads every thread is a daemon; without this the worker would exit right after starting
+  main.keep-alive: true

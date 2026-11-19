@@ -18,7 +18,7 @@ React + TS + Monaco (Vite) ── nginx ──/api──► backend: Spring Boot
                                     Postgres (Flyway): content, progress, users, run_cache, run_jobs (the queue)
                                                  ▲
                                                  │   claims queued runs
-                                              worker: same jar, APP_ROLE=worker, no web server
+                                              worker: its own jar, no web server
                                                  └─ DockerSandbox ──docker run──► python:3.12-alpine / temurin:21-jdk-alpine
                                                        (one fresh hardened container per run)
 ```
@@ -40,12 +40,12 @@ Open http://localhost:3000. Signing in needs Google credentials (see [Google sig
 
 Repo review grading calls the Claude API. Export `ANTHROPIC_API_KEY` before `docker compose up` to enable it; without a key everything else works: reviews return `503` and users can skip straight to fixing.
 
-On startup a one-off `seed` container (`APP_ROLE=seed`) loads the exercises from `backend/src/main/resources/exercises/*.yml` and `repos/*.yml` into the database, then exits. The backend and worker start only after it succeeds, so a broken exercise file stops the deploy. The worker then pulls the sandbox images and **pre-runs every exercise**. That warms the cache and logs a WARN if any `predict_output` answer doesn't match real output.
+On startup a one-off `seed` container loads the exercises from `backend/seed/src/main/resources/exercises/*.yml` and `repos/*.yml` into the database, then exits. The backend and worker start only after it succeeds, so a broken exercise file stops the deploy. The worker then pulls the sandbox images and **pre-runs every exercise**. That warms the cache and logs a WARN if any `predict_output` answer doesn't match real output.
 
 ### Local dev without Compose
 
 ```bash
-cd backend && mvn spring-boot:run          # H2 file DB in ./data, uses your local Docker for runs
+cd backend && mvn -pl all-in-one -am compile spring-boot:run   # API + worker + seed in one process, H2 file DB, your local Docker
 cd frontend && npm install && npm run dev  # http://localhost:5173, proxies /api to :8080
 ```
 
@@ -177,6 +177,20 @@ cd backend && mvn test
 
 `loadtest/loadtest.py` simulates users running uncached code against an isolated copy of the stack, following each run's events until it finishes. It steps the user count up, or (`--spike N`) has N users submit at the same instant. See [loadtest/README.md](loadtest/README.md). On an Apple M4 laptop with 4 worker threads: about 5.5 runs per second, every run succeeding at all loads tested (overload shows up as waiting time), and a spike of 200 simultaneous runs fully absorbed in 48 s.
 
+## Backend modules
+
+The backend is one Maven build with a jar per process, so each process contains only the code it runs (`backend/pom.xml`):
+
+| Module | What it is | Docker image |
+|---|---|---|
+| `core` | Shared library: entities, the queue and cache tables, scoring, sandbox config, Flyway migrations | none |
+| `api` | Web API: sign-in, exercises, grading, queueing runs, live updates, Claude | `--target api` (no docker CLI) |
+| `worker` | Runs queued code in the sandbox. No web server, sign-in or Claude code | `--target worker` (the only one with the docker CLI) |
+| `seed` | Loads the exercise YAML into the database, then exits | `--target seed` |
+| `all-in-one` | All three in one process: the integration tests and local development. Never deployed | none |
+
+Every process starts `dev.codecomp.CodecompApplication` (in `core`); Spring finds only the components on that process's classpath.
+
 ## Configuration
 
 | Env var | Default |
@@ -185,7 +199,6 @@ cd backend && mvn test
 | `SANDBOX_RUNTIME` | Docker default (`runc`); set `runsc` for gVisor |
 | `SANDBOX_PYTHON_IMAGE` / `SANDBOX_JAVA_IMAGE` | `python:3.12-alpine` / `eclipse-temurin:21-jdk-alpine` |
 | `SANDBOX_MAX_CONCURRENT` | `4`; also the default for `WORKER_THREADS` |
-| `APP_ROLE` | `all` (API, worker and seeding in one process: local development, tests). Compose runs `seed` (loads exercises, then exits), then `api` and `worker` as separate services |
 | `WORKER_THREADS` | runs a worker executes at once |
 | `QUEUE_MAX` | `500` queued runs, then new runs get `503` |
 | `QUEUE_MAX_PER_USER` | `2` unfinished runs per user, then `429` |

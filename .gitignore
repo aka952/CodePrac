@@ -8,3 +8,5 @@ frontend/dist/
 .env
 deploy/aws/node_modules/
 deploy/aws/cdk.out/
+backend/*/data/
+backend/*/target/

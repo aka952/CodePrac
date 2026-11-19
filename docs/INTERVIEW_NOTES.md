@@ -788,6 +788,8 @@ The one small leak: the response says `"cached": true` (and is faster), which re
 
 ## 21. What does `app.role` mean? (`all`, `api`, `worker`, `seed`)
 
+> **Outdated:** `app.role` was removed by the multi-module split. Each process is now its own jar; see [section 24](#24-the-multi-module-split-one-jar-per-process). The reasoning below still explains why there are four kinds of process.
+
 **One jar, one Docker image, four ways to start it.** `app.role` (env var `APP_ROLE`, default `all`, in `application.yml`) decides which parts switch on. Each part carries a condition such as `@ConditionalOnExpression("'${app.role}' == 'all' or '${app.role}' == 'seed'")`; Spring skips creating the part when it's false.
 
 | Part | `all` | `api` | `worker` | `seed` |
@@ -877,3 +879,37 @@ per run:  worker ──docker run──► sandbox container (seconds, then dele
 **The important point: splitting the jar would not make them independent.** They still share one database schema; a change to `run_jobs` still needs both deployed together. Real independence means the worker owns no tables and talks to the API only through messages (the SQS hybrid in section 16). That is a redesign, worth it only when workers move to their own machines.
 
 **Interview answer:** "They're separate services at runtime, from one codebase: a modular monolith with roles. I chose that because they share the queue, the cache and the scoring code, and they share a schema anyway. The next step, if security mattered more, would be a multi-module build so the worker, which holds the Docker socket, only contains the code it needs. Full independence would require the worker to stop touching the database and communicate by messages."
+
+---
+
+## 24. The multi-module split: one jar per process
+
+**Before:** one jar, and `app.role` switched parts on or off with `@ConditionalOnExpression`. Every process carried all the code: the worker, which holds the Docker socket, also contained the web server, sign-in and the Claude client (its log printed "ANTHROPIC_API_KEY is not set").
+
+**After:** `backend/` is a Maven multi-module build.
+
+| Module | Contains | Image |
+|---|---|---|
+| `core` | entities and repositories, `RunCache`, `RunResults`, `RepoScoring`, `Grader`, `Points`, `SandboxConfig`, migrations, `core.yml` | none (a library) |
+| `api` | controllers, auth, Claude classes, `JobService` (submit/view), `JobEvents` (SSE), `RateLimiter`, `RepoService` | `api`: no docker CLI |
+| `worker` | `JobWorker`, `JobQueue` (claim/complete/heartbeat/recover), `RunService` (execute), `DockerSandbox`, `SandboxWarmer` | `worker`: the only one with the docker CLI |
+| `seed` | `ExerciseSeeder`, `RepoSeeder`, the YAML files | `seed` |
+| `all-in-one` | api + worker + seed together: integration tests and local development | none |
+
+**The trick that kept it small:** there is still one `CodecompApplication`, in `core`. Spring's component scan only finds classes on the classpath, so the jar's contents *are* the role: the API jar finds only API beans, the worker jar only worker beans. With every module on the classpath (`all-in-one`) you get the old `all` mode, which is why the integration tests barely changed.
+
+**What had to be split, because it mixed both sides:**
+- `RunService` → `RunCache` (core: lookup and store) + `RunService` (worker: run in the sandbox).
+- `JobService` → `JobService` (API: submit, view, limits) + `JobQueue` (worker: claim, complete, heartbeat, recovery).
+- `RepoService` → `RepoScoring` (core: bundle, parse test output, record and score a run) + `RepoService` (API) + repo verification moved into `SandboxWarmer` (worker).
+- The result records the worker writes and the API reads (`RunResponse`, `TestCase`, `TestRunResult`) moved from `web.Api` to core `RunResults`: they are the contract between the two.
+- The YAML definition records moved from the seeders into the entities (`Exercise.Def`, `RepoExercise.Def`), so core doesn't depend on seed code.
+- The API checks language names against `SandboxConfig` instead of a `Sandbox`: the API has no sandbox anymore.
+
+**Measured:** worker jar 48 MB / 59 libraries, API jar 112 MB / 107 libraries. The worker has no Tomcat, Spring MVC, Spring Security or Anthropic SDK. `docker` exists only in the worker image. Same 51 tests, all passing.
+
+**Honest caveat:** the small `spring-web` library is still in the worker and seed jars, because Spring Boot's JSON (`ObjectMapper`) setup depends on it. It is utility classes only, no server.
+
+**Still not independent:** they share one database schema, so a change to `run_jobs` still needs both deployed together (section 23).
+
+**Interview answer:** "I split the backend into modules so each process ships only what it runs. The worker, which can start containers, no longer contains the web stack, sign-in or the AI client, and the API image doesn't even have the docker binary. I kept one application class in the shared module; component scanning picks up whatever is on the classpath, so the jar contents decide the role, and an all-in-one module puts everything together for tests and local development."

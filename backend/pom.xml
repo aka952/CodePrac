@@ -9,30 +9,59 @@
         <relativePath/>
     </parent>
     <groupId>dev.codecomp</groupId>
-    <artifactId>codecomp</artifactId>
+    <artifactId>codecomp-parent</artifactId>
     <version>0.1.0</version>
+    <packaging>pom</packaging>
+
+    <!--
+      One jar per process, so each contains only the code it runs:
+        core        entities, queue and cache tables, scoring, sandbox config, migrations (a library, not an app)
+        api         the web API: sign-in, exercises, grading, queueing runs, live updates, Claude
+        worker      runs queued code in the sandbox; the only one with Docker access
+        seed        loads the exercises into the database, then exits
+        all-in-one  all three in one process: the integration tests and local development
+      Every app starts dev.codecomp.CodecompApplication (in core); it picks up whatever is on its classpath.
+    -->
+    <modules>
+        <module>core</module>
+        <module>api</module>
+        <module>worker</module>
+        <module>seed</module>
+        <module>all-in-one</module>
+    </modules>
+
     <properties>
         <java.version>21</java.version>
+        <!-- only the all-in-one module may be started with spring-boot:run -->
+        <spring-boot.run.skip>true</spring-boot.run.skip>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-core</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-worker</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-seed</artifactId><version>${project.version}</version></dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-oauth2-client</artifactId></dependency>
-        <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
-        <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-database-postgresql</artifactId></dependency>
-        <dependency><groupId>com.fasterxml.jackson.dataformat</groupId><artifactId>jackson-dataformat-yaml</artifactId></dependency>
-        <dependency><groupId>com.anthropic</groupId><artifactId>anthropic-java</artifactId><version>3.8.0</version></dependency>
-        <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
-        <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
-        <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
     </dependencies>
+
     <build>
-        <finalName>codecomp</finalName>
-        <plugins>
-            <plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin>
-        </plugins>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration>
+                        <mainClass>dev.codecomp.CodecompApplication</mainClass>
+                        <!-- the runnable jar is *-exec.jar; the plain jar stays usable as a dependency (all-in-one, tests) -->
+                        <classifier>exec</classifier>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
     </build>
 </project>
