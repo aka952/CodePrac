@@ -6,3 +6,5 @@ frontend/dist/
 *.iml
 .DS_Store
 .env
+deploy/aws/node_modules/
+deploy/aws/cdk.out/

@@ -39,3 +39,46 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  # Deploys main to the AWS instance (docs/DEPLOY_AWS.md). Skipped until the AWS_DEPLOY_ROLE_ARN variable is set.
+  deploy:
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency: deploy
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Run deploy/aws/deploy.sh on the instance
+        run: |
+          params=$(jq -n --arg sha "$GITHUB_SHA" '{
+            executionTimeout: ["3600"],
+            commands: [
+              "set -e",
+              "cd /opt/codecomp",
+              "sudo -u ubuntu git fetch --quiet origin",
+              "sudo -u ubuntu git checkout --quiet --force \($sha)",
+              "sudo -u ubuntu bash deploy/aws/deploy.sh"
+            ]}')
+          id=$(aws ssm send-command --document-name AWS-RunShellScript \
+            --targets Key=tag:app,Values=codecomp --comment "deploy $GITHUB_SHA" \
+            --parameters "$params" --query Command.CommandId --output text)
+          echo "SSM command $id"
+          # `aws ssm wait` gives up after 100 s; the first build takes much longer
+          while :; do
+            sleep 15
+            status=$(aws ssm list-command-invocations --command-id "$id" \
+              --query 'CommandInvocations[0].Status' --output text)
+            case "$status" in Pending|InProgress|Delayed|None) continue ;; esac
+            break
+          done
+          aws ssm list-command-invocations --command-id "$id" --details \
+            --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text
+          echo "Status: $status"
+          [ "$status" = Success ]
