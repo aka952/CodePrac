@@ -4,5 +4,6 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   build: { chunkSizeWarningLimit: 3500 },
-  server: { port: 5173, proxy: { '/api': 'http://localhost:8080' } },
+  // the Compose stack's nginx, which sends each /api path to its service
+  server: { port: 5173, proxy: { '/api': 'http://localhost:3000' } },
 })

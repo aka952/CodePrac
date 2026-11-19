@@ -1,0 +1,20 @@
+spring:
+  config.import: classpath:platform.yml
+  application.name: identity-service
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/identity;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+
+app:
+  security:
+    # sign-in, sign-out, "who am I" and the public keys
+    public-paths: /api/auth/**
+  auth:
+    google:
+      client-id: ${GOOGLE_CLIENT_ID:}
+      client-secret: ${GOOGLE_CLIENT_SECRET:}
+    # RSA private key (PKCS#8 PEM) that signs sign-in tokens. Every instance must use the same one (Secrets Manager).
+    # Empty: a new key is made at startup, so tokens stop working on restart. Local development only.
+    jwt-private-key: ${JWT_PRIVATE_KEY:}
+    token-days: 7

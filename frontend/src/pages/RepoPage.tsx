@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
-  api, followJob, type IssueOutcome, type JobView, notifyPointsChanged, type RepoIssue, type RepoSummary, type RepoView,
-  type ReviewResult, type RunResponse, type TestCase, type TestRunResult, type TestRunSummary, waitingLabel,
+  api, followTestRun, type IssueOutcome, type JobView, notifyPointsChanged, type RepoIssue, type RepoSummary, type RepoView,
+  type ReviewResult, type RunResponse, type TestCase, type TestRunSummary, waitingLabel,
 } from '../api'
 import CodeEditor from '../components/CodeEditor'
 
@@ -80,7 +80,7 @@ export default function RepoPage() {
   const [runs, setRuns] = useState<TestRunSummary[]>([])
   const [showRuns, setShowRuns] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [progress, setProgress] = useState<JobView<TestRunResult> | null>(null)
+  const [progress, setProgress] = useState<JobView<RunResponse> | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const [questionsLeft, setQuestionsLeft] = useState(0)
   const [points, setPoints] = useState(0)
@@ -177,7 +177,7 @@ export default function RepoPage() {
     setTesting(true)
     setTestError(null)
     try {
-      const run = await followJob(await api.testRun(slug, Object.fromEntries(modified.map(p => [p, code[p]]))), setProgress)
+      const run = await followTestRun(slug, await api.testRun(slug, Object.fromEntries(modified.map(p => [p, code[p]]))), setProgress)
       notifyPointsChanged()
       setShown(run)
       setPoints(run.points)

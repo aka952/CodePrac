@@ -2,6 +2,7 @@
   "app": "npx ts-node --prefer-ts-exts bin/app.ts",
   "context": {
     "githubRepo": "aka952/CodePrac",
-    "instanceType": "t4g.medium"
+    "cloudFrontPrefixListId": "pl-3b927c52",
+    "//cloudFrontPrefixListId": "us-east-1. For another region: aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing"
   }
 }

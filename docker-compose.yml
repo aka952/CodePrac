@@ -1,79 +1,158 @@
+# The whole system on one machine, for local development and end-to-end checks:
+#   docker compose up -d --build        then open http://localhost:3000
+# Production runs the same images on AWS ECS (deploy/aws/). Here, Postgres stands in for RDS, LocalStack for SQS and
+# SNS, and nginx (in the frontend image) for the load balancer's path routing.
+
+x-aws: &aws
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT: http://localstack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  RUN_REQUESTS_QUEUE_URL: http://localstack:4566/000000000000/run-requests
+  RUN_EVENTS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:run-events
+
+x-web: &web
+  JWKS_URI: http://identity:8080/api/auth/jwks
+  # local development without Google credentials only: AUTH_DEV_HEADER=true docker compose up
+  AUTH_DEV_HEADER: ${AUTH_DEV_HEADER:-false}
+
+x-ready: &ready
+  db:
+    condition: service_healthy
+  localstack:
+    condition: service_healthy
+
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: codecomp
-      POSTGRES_USER: codecomp
-      POSTGRES_PASSWORD: codecomp
+      POSTGRES_PASSWORD: postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./deploy/local/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U codecomp"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # One-off job: loads the exercises into the database, then exits. backend and worker start only after it succeeds,
-  # so exactly one process seeds, however many API or worker instances run.
-  seed:
-    build:
-      context: ./backend
-      target: seed
+  localstack:
+    image: localstack/localstack:3.8.1
     environment:
-      DB_URL: jdbc:postgresql://db:5432/codecomp
-      DB_USER: codecomp
-      DB_PASSWORD: codecomp
-    depends_on:
-      db:
-        condition: service_healthy
+      SERVICES: sqs,sns
+    volumes:
+      - ./deploy/local/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/messaging-ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
 
-  # The API. It queues code runs but never runs code itself, so it has no access to Docker.
-  backend:
-    build:
-      context: ./backend
-      target: api
+  identity:
+    build: { context: ./backend, target: identity }
     environment:
-      DB_URL: jdbc:postgresql://db:5432/codecomp
-      DB_USER: codecomp
-      DB_PASSWORD: codecomp
-      RUNS_PER_MINUTE: ${RUNS_PER_MINUTE:-20}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      <<: *web
+      DB_URL: jdbc:postgresql://db:5432/identity
+      DB_USER: identity
+      DB_PASSWORD: identity
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      # local development without Google credentials only: AUTH_DEV_HEADER=true docker compose up
-      AUTH_DEV_HEADER: ${AUTH_DEV_HEADER:-false}
+      # empty: a temporary key, so everyone is signed out when identity restarts (fine locally)
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
     depends_on:
       db:
         condition: service_healthy
-      seed:
+
+  # One-off seed tasks: load the content, then exit. The services start only after they succeed.
+  exercise-seed:
+    build: { context: ./backend, target: exercise }
+    environment:
+      SPRING_PROFILES_ACTIVE: seed
+      DB_URL: jdbc:postgresql://db:5432/exercise
+      DB_USER: exercise
+      DB_PASSWORD: exercise
+    depends_on:
+      db:
+        condition: service_healthy
+
+  repo-seed:
+    build: { context: ./backend, target: repo }
+    environment:
+      SPRING_PROFILES_ACTIVE: seed
+      DB_URL: jdbc:postgresql://db:5432/repo
+      DB_USER: repo
+      DB_PASSWORD: repo
+    depends_on:
+      db:
+        condition: service_healthy
+
+  exercise:
+    build: { context: ./backend, target: exercise }
+    environment:
+      <<: *web
+      DB_URL: jdbc:postgresql://db:5432/exercise
+      DB_USER: exercise
+      DB_PASSWORD: exercise
+    depends_on:
+      db:
+        condition: service_healthy
+      exercise-seed:
         condition: service_completed_successfully
 
-  # Takes runs from the queue (the run_jobs table) and executes them in sandbox containers.
-  # Its image holds only the worker code and the docker CLI; only this service can reach the Docker daemon.
-  worker:
-    build:
-      context: ./backend
-      target: worker
+  repo:
+    build: { context: ./backend, target: repo }
     environment:
-      DB_URL: jdbc:postgresql://db:5432/codecomp
-      DB_USER: codecomp
-      DB_PASSWORD: codecomp
+      <<: [*web, *aws]
+      DB_URL: jdbc:postgresql://db:5432/repo
+      DB_USER: repo
+      DB_PASSWORD: repo
+      RUN_SERVICE_URL: http://run:8080
+      RUN_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/run-events-repo
+      RUNS_PER_MINUTE: ${RUNS_PER_MINUTE:-20}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      <<: *ready
+      repo-seed:
+        condition: service_completed_successfully
+
+  # Accepts runs and streams their progress. It never runs code, so it has no access to Docker.
+  run:
+    build: { context: ./backend, target: run }
+    environment:
+      <<: [*web, *aws]
+      DB_URL: jdbc:postgresql://db:5432/run
+      DB_USER: run
+      DB_PASSWORD: run
+      RUN_REQUESTS_DLQ_URL: http://localstack:4566/000000000000/run-requests-dlq
+      RUN_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/run-events-run
+      RUNS_PER_MINUTE: ${RUNS_PER_MINUTE:-20}
+    depends_on: *ready
+
+  # Takes runs from the queue and executes them in sandbox containers. No database. The only service that can reach
+  # the Docker daemon.
+  worker:
+    build: { context: ./backend, target: worker }
+    environment:
+      <<: *aws
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-4}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    # time to finish its current receive and the runs in progress (see JobWorker.stop)
+    stop_grace_period: 60s
     depends_on:
-      db:
+      localstack:
         condition: service_healthy
-      seed:
-        condition: service_completed_successfully
 
   frontend:
     build: ./frontend
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      - identity
+      - exercise
+      - repo
+      - run
 
 volumes:
   pgdata:

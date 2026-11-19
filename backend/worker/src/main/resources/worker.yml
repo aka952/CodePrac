@@ -1,5 +1,0 @@
-app:
-  worker:
-    threads: ${WORKER_THREADS:${SANDBOX_MAX_CONCURRENT:4}}
-    poll-ms: 250
-  warm-on-startup: ${WARM_ON_STARTUP:true}

@@ -1,9 +1,18 @@
 # A separate copy of the stack for load testing, with its own database, on port 3100.
 #   docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up -d --build
+# Simulated users identify themselves with the X-User-Id header instead of signing in.
 services:
-  backend:
+  identity:
     environment:
-      # simulated users identify themselves with the X-User-Id header instead of signing in
+      AUTH_DEV_HEADER: "true"
+  exercise:
+    environment:
+      AUTH_DEV_HEADER: "true"
+  repo:
+    environment:
+      AUTH_DEV_HEADER: "true"
+  run:
+    environment:
       AUTH_DEV_HEADER: "true"
   frontend:
     ports: !override

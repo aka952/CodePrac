@@ -1,1 +1,0 @@
-spring.config.import: classpath:core.yml, classpath:api.yml

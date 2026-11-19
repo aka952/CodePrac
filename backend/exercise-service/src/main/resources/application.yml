@@ -1,0 +1,12 @@
+spring:
+  config.import: classpath:platform.yml, classpath:sandbox.yml
+  application.name: exercise-service
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/exercise;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+
+app:
+  auth:
+    jwks-uri: ${JWKS_URI:http://localhost:8081/api/auth/jwks}
+  seed.enabled: false

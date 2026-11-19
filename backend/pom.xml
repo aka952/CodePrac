@@ -14,34 +14,56 @@
     <packaging>pom</packaging>
 
     <!--
-      One jar per process, so each contains only the code it runs:
-        core        entities, queue and cache tables, scoring, sandbox config, migrations (a library, not an app)
-        api         the web API: sign-in, exercises, grading, queueing runs, live updates, Claude
-        worker      runs queued code in the sandbox; the only one with Docker access
-        seed        loads the exercises into the database, then exits
-        all-in-one  all three in one process: the integration tests and local development
-      Every app starts dev.codecomp.CodecompApplication (in core); it picks up whatever is on its classpath.
+      Microservices, split by business domain. Each service owns its tables and talks to the others only over HTTP
+      and messages (SQS queues, an SNS topic). A service never depends on another service's module.
+
+      Shared libraries (no business logic):
+        contracts         what services exchange: run events, JobView, RunResult, the sandbox language list
+        messaging         SQS/SNS client: send, publish, listen to a queue
+        platform          web-service plumbing: JWT sign-in check, CSRF, @CurrentUser, rate limiting, errors
+
+      Services (one runnable jar and one image each):
+        identity-service  Google sign-in, users, issues the JWT every other service checks
+        exercise-service  snippet exercises and attempts
+        repo-service      repo exercises: reviews, Ask AI, inline edits, recording and scoring test runs
+        run-service       the run queue: accepts runs, result cache, live updates (SSE)
+        sandbox-worker    runs code in sandbox containers; no database, the only one with Docker access
+
+      Tests only, never deployed:
+        content-tests     runs every exercise in a real sandbox to check the content is honest
     -->
     <modules>
-        <module>core</module>
-        <module>api</module>
-        <module>worker</module>
-        <module>seed</module>
-        <module>all-in-one</module>
+        <module>contracts</module>
+        <module>messaging</module>
+        <module>platform</module>
+        <module>identity-service</module>
+        <module>exercise-service</module>
+        <module>repo-service</module>
+        <module>run-service</module>
+        <module>sandbox-worker</module>
+        <module>content-tests</module>
     </modules>
 
     <properties>
         <java.version>21</java.version>
-        <!-- only the all-in-one module may be started with spring-boot:run -->
-        <spring-boot.run.skip>true</spring-boot.run.skip>
+        <aws.sdk.version>2.55.16</aws.sdk.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
-            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-core</artifactId><version>${project.version}</version></dependency>
-            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-api</artifactId><version>${project.version}</version></dependency>
-            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-worker</artifactId><version>${project.version}</version></dependency>
-            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-seed</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-contracts</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-messaging</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-platform</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-exercise-service</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-repo-service</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-sandbox-worker</artifactId><version>${project.version}</version></dependency>
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${aws.sdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -56,8 +78,7 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <configuration>
-                        <mainClass>dev.codecomp.CodecompApplication</mainClass>
-                        <!-- the runnable jar is *-exec.jar; the plain jar stays usable as a dependency (all-in-one, tests) -->
+                        <!-- the runnable jar is *-exec.jar; the plain jar stays usable as a dependency (content-tests) -->
                         <classifier>exec</classifier>
                     </configuration>
                 </plugin>

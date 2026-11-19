@@ -1,0 +1,20 @@
+spring:
+  config.import: classpath:sandbox.yml
+  application.name: sandbox-worker
+  # no web server: the worker only talks to SQS, SNS and Docker
+  main.web-application-type: none
+  # with virtual threads every thread is a daemon; without this the worker would exit right after starting
+  main.keep-alive: true
+  threads.virtual.enabled: true
+
+app:
+  worker:
+    # how many runs at once; matches the sandbox's slots, so a received run always finds a free one
+    threads: ${WORKER_THREADS:${SANDBOX_MAX_CONCURRENT:4}}
+  warm-on-startup: ${WARM_ON_STARTUP:true}
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    endpoint: ${AWS_ENDPOINT:}
+  messaging:
+    run-requests-queue: ${RUN_REQUESTS_QUEUE_URL:}
+    run-events-topic: ${RUN_EVENTS_TOPIC_ARN:}

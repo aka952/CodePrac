@@ -1,0 +1,6 @@
+# The one-off seed task (SPRING_PROFILES_ACTIVE=seed): load exercises/*.yml into the database, then exit.
+# Runs once per deploy, before the service is updated, so exactly one process writes the content.
+spring:
+  main.web-application-type: none
+  main.keep-alive: false
+app.seed.enabled: true

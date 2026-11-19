@@ -1,3 +1,0 @@
-# API, worker and seed in one process, with the API's web server. For the integration tests and local development:
-#   mvn -pl all-in-one -am compile spring-boot:run
-spring.config.import: classpath:core.yml, classpath:api.yml, classpath:worker.yml

@@ -21,7 +21,8 @@ jobs:
           cache: maven
       - name: Pull sandbox images
         run: docker pull -q python:3.12-alpine && docker pull -q eclipse-temurin:21-jdk-alpine
-      # Includes SandboxEscapeTest and RepoExercisesTest, which run against the runner's real Docker daemon
+      # Every service's tests, plus SandboxEscapeTest and the content-tests module, which run against the runner's
+      # real Docker daemon. No AWS needed: the services' tests stand in for SQS and SNS.
       - run: mvn -B test
 
   frontend:
@@ -40,9 +41,26 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  # Deploys main to the AWS instance (docs/DEPLOY_AWS.md). Skipped until the AWS_DEPLOY_ROLE_ARN variable is set.
+  # The infrastructure compiles to a valid CloudFormation template. No AWS credentials needed.
+  infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: deploy/aws/package-lock.json
+      - run: npm ci
+      - run: npx cdk synth --quiet -c imageTag=ci
+
+  # Deploys main to AWS (docs/DEPLOY_AWS.md). Skipped until the AWS_DEPLOY_ROLE_ARN variable is set.
   deploy:
-    needs: [backend, frontend]
+    needs: [backend, frontend, infrastructure]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -51,34 +69,12 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: Run deploy/aws/deploy.sh on the instance
-        run: |
-          params=$(jq -n --arg sha "$GITHUB_SHA" '{
-            executionTimeout: ["3600"],
-            commands: [
-              "set -e",
-              "cd /opt/codecomp",
-              "sudo -u ubuntu git fetch --quiet origin",
-              "sudo -u ubuntu git checkout --quiet --force \($sha)",
-              "sudo -u ubuntu bash deploy/aws/deploy.sh"
-            ]}')
-          id=$(aws ssm send-command --document-name AWS-RunShellScript \
-            --targets Key=tag:app,Values=codecomp --comment "deploy $GITHUB_SHA" \
-            --parameters "$params" --query Command.CommandId --output text)
-          echo "SSM command $id"
-          # `aws ssm wait` gives up after 100 s; the first build takes much longer
-          while :; do
-            sleep 15
-            status=$(aws ssm list-command-invocations --command-id "$id" \
-              --query 'CommandInvocations[0].Status' --output text)
-            case "$status" in Pending|InProgress|Delayed|None) continue ;; esac
-            break
-          done
-          aws ssm list-command-invocations --command-id "$id" --details \
-            --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text
-          echo "Status: $status"
-          [ "$status" = Success ]
+      - run: deploy/aws/deploy.sh "$GITHUB_SHA"

@@ -11,21 +11,36 @@ Read a snippet, **commit to a prediction**, get graded, then **edit and run the 
 
 ## Architecture
 
+Microservices split by business domain. Each service owns its tables in its own database; services talk only over HTTP and messages (SQS queues, an SNS topic).
+
 ```
-React + TS + Monaco (Vite) ── nginx ──/api──► backend: Spring Boot 3.5 API (Java 21, virtual threads)
-                                                 │   no Docker access
-                                                 ▼
-                                    Postgres (Flyway): content, progress, users, run_cache, run_jobs (the queue)
-                                                 ▲
-                                                 │   claims queued runs
-                                              worker: its own jar, no web server
-                                                 └─ DockerSandbox ──docker run──► python:3.12-alpine / temurin:21-jdk-alpine
-                                                       (one fresh hardened container per run)
+React + TS + Monaco ── load balancer (nginx locally, CloudFront + ALB on AWS): routes /api/* by path
+   │
+   ├─ /api/auth/*                       identity-service   Google sign-in; issues the JWT the others check   [users]
+   ├─ /api/exercises*, /points/snippets exercise-service   snippet exercises, grading                        [exercises, attempts]
+   ├─ /api/repos*, /edits, /points/repos repo-service      reviews (Claude), Ask AI, inline edits,           [repo_exercises,
+   │                                                        records and scores test runs                      repo_submissions, pending_runs]
+   │                                         │ POST /internal/runs (inside the network only)
+   │                                         ▼
+   └─ /api/runs, /jobs/*, /languages    run-service        accepts runs, result cache, SSE to the browser    [run_jobs, run_cache]
+                                             │ SQS run-requests
+                                             ▼
+                                        sandbox-worker     no database, no web server; the only one with Docker
+                                             │ docker run (gVisor in production) → one fresh hardened container per run
+                                             │ SNS run-events (Started / Completed / Failed)
+                                             ├──► SQS run-events-run  → run-service  (job status, result cache)
+                                             └──► SQS run-events-repo → repo-service (records and scores the test run)
 ```
 
-**Code runs are queued.** `POST /api/runs` (and repo test runs) answers at once with `200` when the same code ran before (result cache). Otherwise it inserts a `run_jobs` row and answers `202` with a job id. The worker claims jobs oldest first with a conditional `UPDATE ... WHERE status = 'QUEUED'`, so concurrent workers never share a job, and runs at most `WORKER_THREADS` at a time. The browser follows its job over Server-Sent Events (`GET /api/jobs/{id}/events`): queue position, running, then the result. Each API instance checks Postgres every 250 ms with one query for all the jobs its browsers are waiting on.
+**Sign-in is a token, not a session.** identity-service signs a JWT (RS256) after Google sign-in and puts it in an HTTP-only cookie. Every other service checks the signature itself against identity-service's public keys (`/api/auth/jwks`, fetched once and cached), so no request needs a call to identity-service and no server keeps a session.
 
-Workers send a heartbeat every 10 s; a job whose worker goes quiet for 60 s is put back in the queue (failed after 3 tries). Backpressure: at most 2 unfinished runs per user, and new runs are refused with `503` when 500 are already queued. A spike becomes waiting time instead of errors: in the load test, 200 runs submitted at the same instant all completed (see `loadtest/README.md`).
+**Code runs are queued on SQS.** `POST /api/runs` answers at once with `200` when the same code ran before (result cache). Otherwise run-service saves a `QUEUED` row, sends a message to the `run-requests` queue, and answers `202` with a job id. Workers ask the queue for as many messages as they have free threads. A worker publishes `Started`, runs the code, publishes `Completed` (or `Failed`), and only then deletes the message. If a worker dies mid-run, the message reappears after the queue's visibility timeout and another worker takes it; after 3 tries it goes to a dead-letter queue and run-service marks the run FAILED. The browser follows its job over Server-Sent Events (`GET /api/jobs/{id}/events`); each run-service instance checks its own database every 250 ms with one query for all the jobs its browsers are waiting on.
+
+**Events are delivered at least once and out of order**, so every consumer is idempotent: run-service's state changes only move a job forward (a late `Started` after `Completed` changes nothing), and repo-service records a test run only for a job id it is waiting for, deleting that entry in the same transaction.
+
+**Repo test runs cross two services.** repo-service saves a `pending_runs` row under a job id it chooses, then submits the bundle to run-service's internal endpoint. When the `Completed` event arrives, repo-service parses the test output and records the run. The browser follows the job on run-service, then fetches the scored result from repo-service (retrying briefly, since the event may still be on its way).
+
+Backpressure: at most 2 unfinished runs per user, and new runs are refused with `503` when 500 are already queued. A spike becomes waiting time instead of errors: in the load test, 200 runs submitted at the same instant all completed (see `loadtest/README.md`; measured on the earlier, single-database version).
 
 ## Quick start
 
@@ -36,58 +51,68 @@ docker pull python:3.12-alpine && docker pull eclipse-temurin:21-jdk-alpine   # 
 docker compose up --build
 ```
 
-Open http://localhost:3000. Signing in needs Google credentials (see [Google sign-in](docs/DEPLOY_OCI.md#5b-google-sign-in)). To try it locally without them, start it with `AUTH_DEV_HEADER=true docker compose up --build`.
+Open http://localhost:3000. Compose runs every service plus Postgres (one database per service), LocalStack (standing in for SQS and SNS) and nginx (standing in for the load balancer). Signing in needs Google credentials (see [Google sign-in](docs/DEPLOY_AWS.md#google-sign-in); add `http://localhost:3000/api/auth/oauth2/code/google` as a redirect URI). To try it locally without them, start it with `AUTH_DEV_HEADER=true docker compose up --build`.
 
 Repo review grading calls the Claude API. Export `ANTHROPIC_API_KEY` before `docker compose up` to enable it; without a key everything else works: reviews return `503` and users can skip straight to fixing.
 
-On startup a one-off `seed` container loads the exercises from `backend/seed/src/main/resources/exercises/*.yml` and `repos/*.yml` into the database, then exits. The backend and worker start only after it succeeds, so a broken exercise file stops the deploy. The worker then pulls the sandbox images and **pre-runs every exercise**. That warms the cache and logs a WARN if any `predict_output` answer doesn't match real output.
+On startup two one-off seed containers (the exercise and repo images with the `seed` profile) load `exercise-service/src/main/resources/exercises/*.yml` and `repo-service/src/main/resources/repos/*.yml` into their services' databases, then exit. Those services start only after their seed succeeds, so a broken exercise file stops the deploy. Whether the content is honest (every `predict_output` answer matches real output; hidden tests fail on the original code and pass on the solution) is checked in CI by the `content-tests` module, against the real sandbox.
 
-### Local dev without Compose
+### Frontend development
+
+With the stack running in Compose, the Vite dev server gives hot reload against the real services:
 
 ```bash
-cd backend && mvn -pl all-in-one -am compile spring-boot:run   # API + worker + seed in one process, H2 file DB, your local Docker
-cd frontend && npm install && npm run dev  # http://localhost:5173, proxies /api to :8080
+cd frontend && npm install && npm run dev  # http://localhost:5173, proxies /api to the Compose nginx on :3000
 ```
+
+After changing a service, rebuild just that one: `docker compose up -d --build exercise`.
 
 ## Deploying
 
-Single-VM production setup (Caddy, gVisor sandbox, backups) for Oracle Cloud: see [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md). The same setup on AWS (one EC2 instance defined in CDK, deployed by GitHub Actions): see [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
+AWS: the services on ECS (Fargate for the web services, an EC2 Auto Scaling group for the sandbox workers), RDS Postgres, SQS and SNS, an ALB behind CloudFront, defined in CDK and deployed by GitHub Actions: see [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md). Not deployed yet; the stack is checked with `cdk synth` in CI.
 
 ## API
 
-Every endpoint except `/api/auth/*` requires a signed-in user. People sign in with Google; the session is an HTTP-only cookie, and `POST` requests must send the `XSRF-TOKEN` cookie's value back in an `X-XSRF-TOKEN` header. Unauthenticated calls get `401`.
+Every endpoint except `/api/auth/*` requires a signed-in user. People sign in with Google; identity-service then sets a signed token (JWT) in an HTTP-only cookie that every service checks, and `POST` requests must send the `XSRF-TOKEN` cookie's value back in an `X-XSRF-TOKEN` header. Unauthenticated calls get `401`. Signing out deletes the cookie; the token itself stays valid until it expires (7 days).
 
-For local development and the test suite, `AUTH_DEV_HEADER=true` makes the backend accept an `X-User-Id: <uuid>` header instead (the frontend then generates one in localStorage). The production compose file forces it off.
+For local development and the test suite, `AUTH_DEV_HEADER=true` makes the services accept an `X-User-Id: <uuid>` header instead (the frontend then generates one in localStorage). Never set it on a public server.
+
+The service in brackets is where the load balancer sends the request.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/auth/me` | `{user, devHeader, googleConfigured}`; `user` is null when not signed in |
-| GET | `/api/auth/oauth2/authorization/google` | starts Google sign-in (a browser redirect, not an API call) |
-| POST | `/api/auth/logout` | ends the session, `204` |
+| GET | `/api/auth/me` | [identity] `{user, devHeader, googleConfigured}`; `user` is null when not signed in |
+| GET | `/api/auth/oauth2/authorization/google` | [identity] starts Google sign-in (a browser redirect, not an API call) |
+| POST | `/api/auth/logout` | [identity] deletes the sign-in cookie, `204` |
+| GET | `/api/auth/jwks` | [identity] the public keys other services check tokens with |
 
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| GET | `/api/exercises?language=&difficulty=` | | summaries + `NEW/ATTEMPTED/SOLVED` |
-| GET | `/api/exercises/{slug}` | | code + question; `solution` only if already solved |
-| POST | `/api/exercises/{slug}/attempts` | `{answer}` or `{giveUp:true}` | solution revealed when correct, on give-up, or after 3 attempts |
-| POST | `/api/runs` | `{language, code}` | `200` with the result if this code ran before, else `202` with a job (`{id, status, position, result, error}`). `429` when rate limited or the user already has 2 runs in progress; `503` when the queue is full |
-| GET | `/api/jobs/{id}` | | the job's current state; `404` unless it is the caller's |
-| GET | `/api/jobs/{id}/events` | | Server-Sent Events: one `job` event per change (QUEUED with position → RUNNING → DONE/FAILED with `result`), then the stream ends. Streams end after 45 s; reconnect if still running |
-| GET | `/api/languages` | | configured sandbox languages |
-| GET | `/api/points` | | the user's points: `{total, snippets, repos}` |
-| POST | `/api/edits` | `{language, code, selection, instruction}` | inline AI edit: returns `{replacement, note}` for the selected text. Makes only the change described; `note` explains when nothing was changed. Rate limited; needs `ANTHROPIC_API_KEY` |
-| GET | `/api/repos` | | repo exercise summaries + status (`SOLVED` = all hidden tests passed) |
-| GET | `/api/repos/{slug}` | | project files + task; `issues` only once revealed (graded review or skip) |
-| POST | `/api/repos/{slug}/reveal` | | skip the review: reveal the issues and unlock fixing, no AI call |
-| POST | `/api/repos/{slug}/reviews` | `{review}` | Claude grades the review against the planted issues; reveals them. Counts toward the run rate limit |
-| POST | `/api/repos/{slug}/test-runs` | `{files: {path: content}}` | edited files only; compiled with the hidden tests in the sandbox. Same `200`/`202` job response as `/api/runs`; the result is the test report |
-| GET | `/api/repos/{slug}/test-runs` | | the user's last 20 test runs for this exercise, newest first, with per-test results |
-| POST | `/api/repos/{slug}/questions` | `{question}` | Ask AI: general language questions only. `429` once the 5 questions for this exercise are used; needs `ANTHROPIC_API_KEY` |
+| GET | `/api/exercises?language=&difficulty=` | | [exercise] summaries + `NEW/ATTEMPTED/SOLVED` |
+| GET | `/api/exercises/{slug}` | | [exercise] code + question; `solution` only if already solved |
+| POST | `/api/exercises/{slug}/attempts` | `{answer}` or `{giveUp:true}` | [exercise] solution revealed when correct, on give-up, or after 3 attempts |
+| GET | `/api/points/snippets` | | [exercise] `{points}` from snippet exercises. The page adds the two totals |
+| POST | `/api/runs` | `{language, code}` | [run] `200` with the result if this code ran before, else `202` with a job (`{id, status, position, result, error}`). `429` when rate limited or the user already has 2 runs in progress; `503` when the queue is full |
+| GET | `/api/jobs/{id}` | | [run] the job's current state; `404` unless it is the caller's |
+| GET | `/api/jobs/{id}/events` | | [run] Server-Sent Events: one `job` event per change (QUEUED with position → RUNNING → DONE/FAILED with `result`), then the stream ends. Streams end after 45 s; reconnect if still running |
+| GET | `/api/languages` | | [run] configured sandbox languages |
+| POST | `/api/edits` | `{language, code, selection, instruction}` | [repo] inline AI edit: returns `{replacement, note}` for the selected text. Makes only the change described; `note` explains when nothing was changed. Rate limited; needs `ANTHROPIC_API_KEY` |
+| GET | `/api/repos` | | [repo] repo exercise summaries + status (`SOLVED` = all hidden tests passed) |
+| GET | `/api/repos/{slug}` | | [repo] project files + task; `issues` only once revealed (graded review or skip) |
+| POST | `/api/repos/{slug}/reveal` | | [repo] skip the review: reveal the issues and unlock fixing, no AI call |
+| POST | `/api/repos/{slug}/reviews` | `{review}` | [repo] Claude grades the review against the planted issues; reveals them. Rate limited |
+| POST | `/api/repos/{slug}/test-runs` | `{files: {path: content}}` | [repo] edited files only; compiled with the hidden tests in the sandbox. Returns run-service's job (`200` if answered from the cache, else `202`) to follow on `/api/jobs/{id}/events`; its result is the raw run output |
+| GET | `/api/repos/{slug}/test-runs/{jobId}` | | [repo] the scored test run once recorded: `{tests, passed, total, allPassed, points, maxPoints}`. `404` until repo-service has received the run's result event, usually well under a second after the job is DONE |
+| GET | `/api/repos/{slug}/test-runs` | | [repo] the user's last 20 test runs for this exercise, newest first, with per-test results |
+| POST | `/api/repos/{slug}/questions` | `{question}` | [repo] Ask AI: general language questions only. `429` once the 5 questions for this exercise are used; needs `ANTHROPIC_API_KEY` |
+| GET | `/api/points/repos` | | [repo] `{points}` from repo exercises |
+
+Internal, not reachable through the load balancer: `POST /internal/runs` on run-service (`{id, userId, language, code}`), used by repo-service.
 
 ## Points
 
-Points are derived from stored attempts and test runs (nothing extra is saved), so the rules can change without a migration. They live in `grading/Points.java`.
+Points are derived from stored attempts and test runs (nothing extra is saved), so the rules can change without a migration. Each service scores its own: `exercise-service` in `grading/Points.java`, `repo-service` in `repo/RepoPoints.java`.
 
 | | Easy | Medium | Hard |
 |---|---|---|---|
@@ -95,7 +120,7 @@ Points are derived from stored attempts and test runs (nothing extra is saved), 
 | Repo fix | 50 | 100 | 150 |
 
 - **Snippets:** full points for a correct first attempt, 70% on the second, 40% on the third. Nothing once the answer has been revealed (after giving up or three wrong attempts).
-- **Repo fixes:** 80% is shared equally across the hidden tests the user makes pass, and the remaining 20% is a bonus for passing all of them. Tests that already pass on the untouched code earn nothing. The user's best run counts.
+- **Repo fixes:** 80% is shared equally across the hidden tests the user makes pass, and the remaining 20% is a bonus for passing all of them. Tests that already pass on the untouched code (the exercise's baseline) earn nothing. repo-service measures each baseline by running the untouched code through run-service; until then, only a full pass scores. The user's best run counts.
 - Reviews and Ask AI do not affect points.
 
 ## Adding exercises
@@ -141,14 +166,11 @@ Code is piped via stdin, never interpolated into the shell command.
 
 `SandboxEscapeTest` runs real hostile programs against these limits (fork bomb, memory bomb, infinite loop, output flood, network, metadata endpoint, rootfs write, tmpfs fill, uid check). It is skipped automatically when Docker isn't available.
 
-**Stronger isolation:** install [gVisor](https://gvisor.dev/docs/user_guide/install/) and start with `SANDBOX_RUNTIME=runsc docker compose up`. Every container then runs against gVisor's user-space kernel instead of the host kernel.
+**Stronger isolation:** install [gVisor](https://gvisor.dev/docs/user_guide/install/) and start with `SANDBOX_RUNTIME=runsc docker compose up`. Every container then runs against gVisor's user-space kernel instead of the host kernel. On AWS the worker hosts install it at boot and use it by default.
 
 ### ⚠️ Know the trade-off
 
-The **worker** container mounts `/var/run/docker.sock`, which is effectively root on the host. The API does not: taking over the API no longer means owning the server. The worker still runs on the same machine as the database, so before a large public launch:
-
-1. run workers on their own machines, pointed at the same database, and
-2. keep gVisor on (`SANDBOX_RUNTIME=runsc`, the production default) or move to Firecracker.
+The **worker** container mounts `/var/run/docker.sock`, which is effectively root on its host. On AWS that host runs nothing else: the worker has no database credentials and no network path to the database, and its IAM role can only take run requests and publish run events. Someone who escapes the sandbox and the worker gets an EC2 host that can read and write those two queues, not the users' data. gVisor stays on; Firecracker microVMs would be the next step.
 
 ## Adding repo exercises
 
@@ -159,7 +181,7 @@ Append to `repos/*.yml`. Each entry has `slug`, `title`, `language` (needs a `<l
 - `issues`: `{id, file, line, category, title, detail}`, the reference list reviews are graded against
 - `solution`: replacement files that fix every tested issue
 
-The project, edits and tests are zipped and run as one sandbox job (`sandbox.languages.java-project`). At startup the backend checks that the hidden tests fail on the original code and pass on the solution, and logs a WARN if not; `RepoExercisesTest` asserts the same.
+The project, edits and tests are zipped and run as one sandbox job (`sandbox.languages.java-project`). `RepoExercisesTest` (in `content-tests`) checks in CI that the hidden tests fail on the original code and pass on the solution.
 
 ## Tests
 
@@ -167,11 +189,16 @@ The project, edits and tests are zipped and run as one sandbox job (`sandbox.lan
 cd backend && mvn test
 ```
 
-- `GraderTest`: normalization rules
-- `ApiIntegrationTest`: full Spring context on H2 with a fake sandbox and fake review grader: listing, hidden answers, reveal-after-3, give-up, caching, rate limiting, error codes, repo review/test-run endpoints
-- `RepoExercisesTest`: every repo exercise against real Docker: hidden tests fail on the original code, pass on the reference solution
-- `JobQueueIntegrationTest`: the queue on a real server: Server-Sent Events from running to done, queue positions, job ownership, the per-user cap, and recovery of jobs from a worker that died
-- `SandboxEscapeTest`: hostile programs against real Docker. Use `SANDBOX_PYTHON_IMAGE`, `SANDBOX_JAVA_IMAGE` and `SANDBOX_RUNTIME` to point it at other images or gVisor.
+Each service is tested on its own: other services are fakes, and messages are handed to the handlers directly (a recording sender stands in for SQS and SNS), so no test needs AWS or LocalStack.
+
+- identity-service `AuthIntegrationTest`: Google sign-in sets a signed token cookie; tampered tokens mean signed out; the JWKS has no private parts; logout needs the CSRF token
+- exercise-service `ExerciseIntegrationTest`: listing, hidden answers, reveal-after-3, give-up, points; tokens signed by another key, issuer or expired are rejected; cookie-authenticated POSTs need the CSRF token. Plus `GraderTest`, `PointsTest`
+- run-service `RunApiTest`: queueing, cache hits, duplicate and out-of-order events, the dead-letter queue, resending a run whose message never left, rate limits, the per-user cap, job ownership, internal runs. `JobFlowIntegrationTest`: Server-Sent Events on a real server. `RunCacheTest`
+- repo-service `RepoIntegrationTest`: reviews, skip, Ask AI quota, inline edits, test runs recorded and scored from events (once each, unknown jobs ignored), baselines, run-service refusals passed on. `RepoPointsTest`
+- sandbox-worker `JobWorkerTest`: the worker loop with an in-memory queue: events, busy sandbox, failures, never holding more messages than threads. `SandboxEscapeTest`: hostile programs against real Docker. Use `SANDBOX_PYTHON_IMAGE`, `SANDBOX_JAVA_IMAGE` and `SANDBOX_RUNTIME` to point it at other images or gVisor
+- content-tests `SnippetAnswersTest`, `RepoExercisesTest`: every exercise in the real sandbox
+
+The Docker-backed tests are skipped automatically when Docker isn't available.
 
 ## Load test
 
@@ -179,43 +206,50 @@ cd backend && mvn test
 
 ## Backend modules
 
-The backend is one Maven build with a jar per process, so each process contains only the code it runs (`backend/pom.xml`):
+One Maven build (`backend/pom.xml`), one runnable jar and one Docker image per service. A service never depends on another service's module, only on the shared libraries:
 
 | Module | What it is | Docker image |
 |---|---|---|
-| `core` | Shared library: entities, the queue and cache tables, scoring, sandbox config, Flyway migrations | none |
-| `api` | Web API: sign-in, exercises, grading, queueing runs, live updates, Claude | `--target api` (no docker CLI) |
-| `worker` | Runs queued code in the sandbox. No web server, sign-in or Claude code | `--target worker` (the only one with the docker CLI) |
-| `seed` | Loads the exercise YAML into the database, then exits | `--target seed` |
-| `all-in-one` | All three in one process: the integration tests and local development. Never deployed | none |
-
-Every process starts `dev.codecomp.CodecompApplication` (in `core`); Spring finds only the components on that process's classpath.
+| `contracts` | Library: what services exchange (run messages and events, `JobView`, `RunResult`, the sandbox languages). Fields may be added, never renamed or removed | none |
+| `messaging` | Library: send to SQS, publish to SNS, listen to a queue | none |
+| `platform` | Library: JWT check, CSRF, `@CurrentUser`, rate limiting, error responses. No business logic | none |
+| `identity-service` | Google sign-in, users, signs tokens | `--target identity` |
+| `exercise-service` | Snippet exercises; seeds its own content (`seed` profile) | `--target exercise` |
+| `repo-service` | Repo exercises, Claude features, records and scores test runs; seeds its own content | `--target repo` |
+| `run-service` | Accepts runs, result cache, live updates. Runs no code | `--target run` |
+| `sandbox-worker` | Runs code in sandbox containers. No database, web server, sign-in or Claude code | `--target worker` (the only one with the docker CLI) |
+| `content-tests` | Tests only: every exercise in the real sandbox. Never deployed | none |
 
 ## Configuration
 
 | Env var | Default |
 |---|---|
-| `DB_URL` / `DB_USER` / `DB_PASSWORD` | H2 file DB |
+| `DB_URL` / `DB_USER` / `DB_PASSWORD` | H2 file DB, per service |
+| `JWKS_URI` | `http://localhost:8081/api/auth/jwks`: where the services fetch identity-service's public keys |
+| `JWT_PRIVATE_KEY` | identity-service only. Unset: a temporary key, so everyone is signed out on restart (local development) |
+| `RUN_SERVICE_URL` | repo-service only. `http://localhost:8084` |
+| `AWS_REGION` / `AWS_ENDPOINT` | `us-east-1` / unset. `AWS_ENDPOINT` points the SQS and SNS clients at LocalStack |
+| `RUN_REQUESTS_QUEUE_URL`, `RUN_REQUESTS_DLQ_URL`, `RUN_EVENTS_TOPIC_ARN`, `RUN_EVENTS_QUEUE_URL` | the queues and topic, per service (see `docker-compose.yml`) |
 | `SANDBOX_RUNTIME` | Docker default (`runc`); set `runsc` for gVisor |
 | `SANDBOX_PYTHON_IMAGE` / `SANDBOX_JAVA_IMAGE` | `python:3.12-alpine` / `eclipse-temurin:21-jdk-alpine` |
 | `SANDBOX_MAX_CONCURRENT` | `4`; also the default for `WORKER_THREADS` |
 | `WORKER_THREADS` | runs a worker executes at once |
 | `QUEUE_MAX` | `500` queued runs, then new runs get `503` |
 | `QUEUE_MAX_PER_USER` | `2` unfinished runs per user, then `429` |
-| `RUNS_PER_MINUTE` | `20` per user |
-| `WARM_ON_STARTUP` | `true` |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset: nobody can sign in. See [docs/DEPLOY_OCI.md](docs/DEPLOY_OCI.md#5b-google-sign-in) |
+| `RUNS_PER_MINUTE` | `20` per user, counted separately by run-service (runs) and repo-service (AI calls), and per instance (see `platform/RateLimiter`) |
+| `WARM_ON_STARTUP` | `true`: the worker pulls the sandbox images at startup |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset: nobody can sign in. See [Google sign-in](docs/DEPLOY_AWS.md#google-sign-in) |
 | `AUTH_DEV_HEADER` | `false`. `true` accepts an `X-User-Id` header instead of sign-in: local development only |
 | `ANTHROPIC_API_KEY` | unset (review grading, Ask AI and inline AI edits disabled) |
 | `REVIEW_MODEL` | `claude-opus-5-5` |
 | `ASSISTANT_MODEL` | `claude-opus-5-5` (Ask AI and inline AI edits) |
 
-Limits (memory, pids, timeouts, output cap) live in `application.yml` under `sandbox:`.
+Limits (memory, pids, timeouts, output cap) live in `contracts/src/main/resources/sandbox.yml` under `sandbox:`.
 
 ## Roadmap
 
-1. **Scaling execution**: done for one machine (Postgres-backed queue, separate worker, Server-Sent Events). Next: workers on their own machines, and Postgres `LISTEN/NOTIFY` instead of the 250 ms check. A broker such as Kafka only if Postgres becomes the bottleneck.
-2. **Hardening**: executors on a tainted EKS node group, gVisor RuntimeClass, NetworkPolicy deny-all, no IAM role, escape tests in CI.
-3. **Auth**: done (Google sign-in). Remaining: Redis-backed rate limits for several API instances, sessions that survive restarts.
+1. **Scaling execution**: done (SQS queue, workers on their own hosts scaling on queue depth, Server-Sent Events). Next: deploy it; measure the end-to-end latency the extra hops add.
+2. **Hardening**: Firecracker microVMs instead of containers, mutual TLS between services instead of trusting the private network for `/internal`, tracing across services (OpenTelemetry).
+3. **Auth**: done (Google sign-in, stateless JWTs). Remaining: a shared rate limiter (Redis) so limits hold across instances, and token revocation (short-lived tokens plus refresh).
 4. **Learning features**: spaced repetition, streaks, topic progress, "what-if" exercises that require editing code.
 5. **AI layer**: LLM grading of "explain this function" answers, generated hints.

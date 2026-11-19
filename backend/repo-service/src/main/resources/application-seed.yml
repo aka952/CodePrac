@@ -1,0 +1,8 @@
+# The one-off seed task (SPRING_PROFILES_ACTIVE=seed): load repos/*.yml into the database, then exit.
+spring:
+  main.web-application-type: none
+  main.keep-alive: false
+app:
+  seed.enabled: true
+  baseline.enabled: false
+  messaging.listen: false

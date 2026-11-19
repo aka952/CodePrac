@@ -1,0 +1,25 @@
+spring:
+  config.import: classpath:platform.yml, classpath:sandbox.yml
+  application.name: repo-service
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/repo;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+
+app:
+  auth:
+    jwks-uri: ${JWKS_URI:http://localhost:8081/api/auth/jwks}
+  # run-service inside the network (ECS Service Connect on AWS); its /internal endpoints are not public
+  run-service.url: ${RUN_SERVICE_URL:http://localhost:8084}
+  review.model: ${REVIEW_MODEL:claude-opus-5-5}
+  assistant.model: ${ASSISTANT_MODEL:claude-opus-5-5}
+  seed.enabled: false
+  # measure each repo exercise's baseline (tests passing on the untouched code) through run-service
+  baseline.enabled: true
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    endpoint: ${AWS_ENDPOINT:}
+  messaging:
+    listen: true
+    # this service's own subscription to the run-events topic
+    run-events-queue: ${RUN_EVENTS_QUEUE_URL:}

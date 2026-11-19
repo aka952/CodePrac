@@ -263,10 +263,34 @@ async function readJobEvents<T>(id: string, latest: JobView<T>, onEvent: (job: J
   }
 }
 
+/**
+ * A repo test run: follows the job on run-service, then fetches the scored result from repo-service. repo-service
+ * records the run when it receives run-service's event, usually a moment after the job is DONE, so a 404 is retried briefly.
+ */
+export async function followTestRun(slug: string, job: JobView<RunResponse>, onUpdate?: (job: JobView<RunResponse>) => void): Promise<TestRunResult> {
+  const run = await followJob(job, onUpdate)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const scored = await request<Omit<TestRunResult, 'run'>>(`/repos/${encodeURIComponent(slug)}/test-runs/${encodeURIComponent(job.id!)}`)
+      return { ...scored, run }
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404) || attempt >= 20) throw e
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+}
+
 export const api = {
   me: () => request<Me>('/auth/me'),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
-  points: () => request<PointsSummary>('/points'),
+  /** Each service totals its own points; the page adds them up. */
+  points: async (): Promise<PointsSummary> => {
+    const [snippets, repos] = await Promise.all([
+      request<{ points: number }>('/points/snippets'),
+      request<{ points: number }>('/points/repos'),
+    ])
+    return { total: snippets.points + repos.points, snippets: snippets.points, repos: repos.points }
+  },
   exercises: () => request<ExerciseSummary[]>('/exercises'),
   exercise: (slug: string) => request<ExerciseView>(`/exercises/${encodeURIComponent(slug)}`),
   attempt: (slug: string, body: { answer?: string; giveUp?: boolean }) =>
@@ -285,8 +309,9 @@ export const api = {
   testRuns: (slug: string) => request<TestRunSummary[]>(`/repos/${encodeURIComponent(slug)}/test-runs`),
   ask: (slug: string, question: string) =>
     request<QuestionAnswer>(`/repos/${encodeURIComponent(slug)}/questions`, { method: 'POST', body: JSON.stringify({ question }) }),
+  /** run-service's job for the hidden tests; pass it to followTestRun. */
   testRun: (slug: string, files: Record<string, string>) =>
-    request<JobView<TestRunResult>>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) }),
+    request<JobView<RunResponse>>(`/repos/${encodeURIComponent(slug)}/test-runs`, { method: 'POST', body: JSON.stringify({ files }) }),
 }
 
 export const TYPE_LABEL: Record<ExerciseType, string> = {

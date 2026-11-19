@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>dev.codecomp</groupId>
+        <artifactId>codecomp-parent</artifactId>
+        <version>0.1.0</version>
+    </parent>
+    <artifactId>codecomp-sandbox-worker</artifactId>
+    <description>
+        Takes run requests from the SQS queue, runs them in sandbox containers, publishes the outcome on the run-events
+        topic. No database, no web server, no sign-in, no Claude. The only service with Docker access.
+    </description>
+
+    <dependencies>
+        <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-contracts</artifactId></dependency>
+        <dependency><groupId>dev.codecomp</groupId><artifactId>codecomp-messaging</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter</artifactId></dependency>
+    </dependencies>
+
+    <build>
+        <finalName>sandbox-worker</finalName>
+        <plugins>
+            <plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin>
+        </plugins>
+    </build>
+</project>

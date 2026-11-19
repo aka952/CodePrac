@@ -8,7 +8,7 @@ Start a separate copy of the stack so test data stays out of your normal databas
 
 ```bash
 docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up -d --build
-docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml logs worker | grep verified    # wait for 5 lines
+docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml ps    # wait until every service is up
 ```
 
 Run the test (Python 3.9+, no packages needed):
@@ -41,6 +41,8 @@ docker compose -p codecomp-loadtest -f docker-compose.yml -f loadtest/docker-com
 With the queue, overload shows up as growing `p95`, not as refusals. The server is past its comfortable limit where `p95` climbs past a few seconds.
 
 ## Results (Apple M4 laptop, 4 worker threads, 2026-11-17)
+
+Measured on the earlier version (one database, the queue in Postgres), before the split into microservices. Not repeated since.
 
 | Users | Runs/s | Succeeded | Median | 95th pct | Before the queue (succeeded, 95th pct) |
 |---|---|---|---|---|---|

@@ -1,0 +1,29 @@
+spring:
+  config.import: classpath:platform.yml, classpath:sandbox.yml
+  application.name: run-service
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/run;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+
+app:
+  auth:
+    jwks-uri: ${JWKS_URI:http://localhost:8081/api/auth/jwks}
+  security:
+    # called by repo-service only: the load balancer has no route to it, and security groups allow only repo-service
+    internal-paths: /internal/**
+  queue:
+    max-queued: ${QUEUE_MAX:500}
+    max-active-per-user: ${QUEUE_MAX_PER_USER:2}
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    # LocalStack in local development; empty on AWS
+    endpoint: ${AWS_ENDPOINT:}
+  messaging:
+    # false in tests: they hand events to the handlers directly
+    listen: true
+    run-requests-queue: ${RUN_REQUESTS_QUEUE_URL:}
+    run-requests-dlq: ${RUN_REQUESTS_DLQ_URL:}
+    run-events-topic: ${RUN_EVENTS_TOPIC_ARN:}
+    # this service's own subscription to the run-events topic
+    run-events-queue: ${RUN_EVENTS_QUEUE_URL:}

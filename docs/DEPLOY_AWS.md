@@ -1,38 +1,51 @@
 # Deploying to AWS
 
-The same single-machine setup as [DEPLOY_OCI.md](DEPLOY_OCI.md), on one EC2 instance:
+The microservices on managed AWS services, defined in AWS CDK ([deploy/aws/](../deploy/aws/)) and deployed by GitHub Actions.
 
-- Docker Compose runs Caddy, the frontend, the API, the worker and Postgres. A one-off `seed` container loads the exercises before the API and worker start.
-- The infrastructure is defined in AWS CDK ([deploy/aws/](../deploy/aws/)).
-- GitHub Actions deploys every push to `main` after the tests pass.
-
-**Why EC2 and not Fargate or ECS-only:** the worker starts a sandbox container for every code run through the Docker socket and uses gVisor. Fargate allows neither.
+> **Status:** the stack synthesizes (`npx cdk synth`, also checked in CI) but has not been deployed. Treat this guide as the intended procedure, not a tested one.
 
 ```
-GitHub Actions ──(OIDC role, ssm:SendCommand)──► EC2 t4g.medium, Ubuntu 24.04 ARM, Elastic IP
-                                                   └─ git checkout <sha> → deploy/aws/deploy.sh
-                                                        ├─ .env  ◄── SSM Parameter Store /codecomp/*
-                                                        └─ docker compose up: db → seed (exits) → backend, worker → frontend, caddy
+Browser ─► CloudFront ─┬─ /*      → S3 (the built frontend)
+                       └─ /api/*  → ALB (only reachable from CloudFront) ─ path rules ─┐
+                                                                                      │
+   ┌──────────────────────────── private subnets ──────────────────────────────────────┤
+   │  /api/auth/*                         → identity  (Fargate)                         │
+   │  /api/exercises*, /api/points/snippets → exercise (Fargate)                        │
+   │  /api/repos*, /api/edits, /api/points/repos → repo (Fargate) ─Service Connect─► run /internal/runs
+   │  /api/runs, /api/jobs/*, /api/languages → run     (Fargate)                        │
+   │                                                                                    │
+   │  run ─► SQS run-requests ─► worker (ECS on EC2 Auto Scaling group, Docker + gVisor) │
+   │  worker ─► SNS run-events ─┬► SQS run-events-run  → run                           │
+   │                            └► SQS run-events-repo → repo                          │
+   │  RDS Postgres 16: databases identity, exercise, repo, run (one login each)         │
+   └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-What the CDK stack creates (`deploy/aws/lib/codecomp-stack.ts`):
+**Why the worker is on EC2, not Fargate:** it starts a sandbox container for every run through the host's Docker socket, and those containers run under gVisor. Fargate offers neither a Docker daemon nor a choice of container runtime.
+
+## What the stack creates
 
 | Resource | Notes |
 |---|---|
-| VPC with one public subnet | No NAT gateway (none needed, no hourly cost) |
-| Security group | Ports 80 and 443 only. **No SSH**: you get a shell through SSM Session Manager |
-| EC2 instance | `t4g.medium` (2 vCPU, 4 GB), 30 GB encrypted gp3 disk, IMDSv2 only. On first boot it clones the repository to `/opt/codecomp` and runs `deploy/oci/setup-server.sh` (Docker, gVisor, sandbox images) |
-| Elastic IP | Fixed address for DNS |
-| Instance role | SSM agent, plus read access to `/codecomp/*` parameters |
-| GitHub OIDC provider and deploy role | Only the `main` branch of this repository can assume it, and it can only send commands to this instance. No AWS keys are stored in GitHub |
+| VPC | 2 AZs, public subnets (ALB, NAT) and private subnets (everything else), 1 NAT gateway |
+| RDS Postgres 16 | `db.t4g.micro`, encrypted, 7-day backups, deletion protection. One database and one login per service, created by the `db-init` task |
+| ECS cluster | Service Connect namespace `codecomp.internal`: services call each other as `http://identity:8080`, `http://run:8080` |
+| 4 Fargate services | identity, exercise, repo, run. 1 task each, scaling on CPU (identity to 2, the others to 4). Rolling deploys with automatic rollback |
+| Worker | ECS service on an EC2 Auto Scaling group (`t3.medium`, ECS-optimized Amazon Linux 2023, gVisor installed at boot). One worker per host; scales from 1 to 4 on the depth of the run-requests queue |
+| SQS + SNS | `run-requests` (visibility 2 min, dead-letter after 3 receives), topic `run-events`, and one queue per subscriber (`run-events-run`, `run-events-repo`), each with its own dead-letter queue |
+| ALB | Path rules per service; no rule for `/internal/*`, so it answers 404. Its security group admits only CloudFront |
+| CloudFront + S3 | The frontend from a private bucket; `/api/*` forwarded to the ALB uncached, with cookies and headers |
+| Secrets Manager | DB passwords (generated), and three set by hand: `codecomp/jwt-private-key`, `codecomp/google-client-secret`, `codecomp/anthropic-api-key` |
+| ECR | One repository per image, immutable tags (the git commit) |
+| CloudWatch | Logs per service (`/codecomp/<name>`, 30 days), alarms on every dead-letter queue and on ALB 5xx |
+| GitHub OIDC deploy role | Only the `main` branch of this repository can assume it. Pushes images, runs the one-off tasks, runs `cdk deploy`, uploads the frontend |
+
+Security groups say who may call whom: the ALB reaches the four web services; exercise, repo and run reach identity (for its public keys); only repo reaches run (for `/internal/runs`); only the services and the one-off tasks reach Postgres.
 
 ## What you need
 
-- An AWS account, and the [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) signed in to it (`aws sts get-caller-identity` works)
-- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for the AWS CLI, to get a shell on the instance
-- Node.js 22
-- A domain name (needed for HTTPS, which Google sign-in requires)
-- Google sign-in credentials ([DEPLOY_OCI.md, step 5b](DEPLOY_OCI.md#5b-google-sign-in)); the redirect URI is `https://<your-domain>/api/auth/oauth2/code/google`
+- An AWS account and the AWS CLI signed in to it (`aws sts get-caller-identity` works), Node.js 22, Docker, `jq`
+- Google sign-in credentials (below); the redirect URI is `https://<your-cloudfront-domain>/api/auth/oauth2/code/google`
 - Optional: an Anthropic API key
 
 ## 1. Create the infrastructure
@@ -41,101 +54,88 @@ What the CDK stack creates (`deploy/aws/lib/codecomp-stack.ts`):
 cd deploy/aws
 npm ci
 npx cdk bootstrap        # once per account and region
-npx cdk deploy
+npx cdk deploy -c googleClientId=<id>.apps.googleusercontent.com
 ```
 
-It prints three outputs: `PublicIp`, `InstanceId` and `DeployRoleArn`. Keep them.
+Without an image tag, every service is created with 0 tasks: there are no images yet. The outputs include `SiteUrl` and `DeployRoleArn`.
 
-If the account already has a GitHub OIDC provider (`token.actions.githubusercontent.com`), the deploy fails because only one is allowed per account. Reuse the existing one:
+`cdk.json` holds the ID of CloudFront's origin-facing prefix list for `us-east-1`. In another region, look yours up and pass it with `-c cloudFrontPrefixListId=...`:
 
 ```bash
-npx cdk deploy -c githubOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com
+aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
 ```
 
-The first boot takes a few minutes (Docker, gVisor, sandbox images). It is finished when `/opt/codecomp` exists and `docker` works in a session (step 4).
+If the account already has GitHub's OIDC provider, pass `-c githubOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`.
 
-## 2. Store the settings
-
-The instance builds its `.env` from SSM Parameter Store on every deploy, so secrets never live in the repository or in GitHub. Use the same region as the stack:
+## 2. Set the secrets
 
 ```bash
-put() { aws ssm put-parameter --name "/codecomp/$1" --type SecureString --overwrite --value "$2"; }
-
-put POSTGRES_PASSWORD "$(openssl rand -hex 24)"     # set once: Postgres only reads it on first start
-put SITE_ADDRESS code.example.com                    # your domain; Caddy then gets an HTTPS certificate
-put GOOGLE_CLIENT_ID '...'
-put GOOGLE_CLIENT_SECRET '...'
-put ANTHROPIC_API_KEY '...'                          # optional
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt.pem   # signs sign-in tokens
+aws secretsmanager put-secret-value --secret-id codecomp/jwt-private-key --secret-string file://jwt.pem && rm jwt.pem
+aws secretsmanager put-secret-value --secret-id codecomp/google-client-secret --secret-string '...'
+aws secretsmanager put-secret-value --secret-id codecomp/anthropic-api-key --secret-string '...'   # optional
 ```
 
-Any other variable from the README's configuration table can be set the same way, for example `/codecomp/SANDBOX_RUNTIME`.
+Every identity-service instance signs with this key, and every other service checks tokens against its public half (published at `/api/auth/jwks`). Replacing it signs everyone out.
 
-## 3. Point the domain at the instance
+### Google sign-in
 
-Create an `A` record for your domain with the `PublicIp` output as its value.
+1. [Google Cloud Console](https://console.cloud.google.com/) → create a project → **APIs & Services → OAuth consent screen**: user type External. The app uses only `openid`, `email` and `profile`.
+2. **Credentials → Create credentials → OAuth client ID**, type Web application. Authorized redirect URI: `https://<SiteUrl domain>/api/auth/oauth2/code/google`.
+3. Put the client ID in the `cdk deploy` command (step 1) and the secret in Secrets Manager (above).
 
-## 4. First deploy
+While the consent screen is in Testing mode, only the listed test users can sign in.
 
-You can deploy by hand once, which is also the quickest way to check the instance:
+## 3. Deploy
+
+By hand, or let GitHub Actions do it (step 4). Either way it is one script:
 
 ```bash
-aws ssm start-session --target <InstanceId>
-sudo -iu ubuntu
-cd /opt/codecomp && bash deploy/aws/deploy.sh
+deploy/aws/deploy.sh "$(git rev-parse HEAD)"
 ```
 
-The first build takes 10–20 minutes, mostly Maven downloading dependencies. Then:
+It:
 
-```bash
-docker compose ps -a                                        # seed "Exited (0)", the other five "Up"
-docker compose logs worker | grep -E "verified|WARN"        # every repo exercise "verified"
-```
+1. builds the five images and pushes them to ECR, tagged with the commit;
+2. runs the one-off tasks with the new images: `db-init` (creates missing database logins), then the exercise and repo **seed** tasks. If seeding fails (a broken exercise file), the deploy stops here and the old version keeps serving;
+3. runs `cdk deploy -c imageTag=<commit>`: ECS replaces each service's tasks one by one, and rolls a service back if its new tasks fail their health checks. Each service applies its own Flyway migrations at startup;
+4. uploads the frontend to S3 and clears CloudFront's cache.
 
-Open `https://<your-domain>/`.
+Then open the `SiteUrl` output.
 
-## 5. Deploy from GitHub Actions
+## 4. Deploy from GitHub Actions
 
-In the GitHub repository go to **Settings → Secrets and variables → Actions → Variables** and add:
+In the repository: **Settings → Secrets and variables → Actions → Variables**:
 
 | Variable | Value |
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | The `DeployRoleArn` output |
-| `AWS_REGION` | The stack's region, e.g. `eu-central-1` |
+| `AWS_REGION` | The stack's region |
 
-From then on every push to `main` runs the tests, then the `deploy` job. That job:
+Every push to `main` then runs the tests, `cdk synth`, and the `deploy` job, which assumes the role through OIDC (no AWS keys in GitHub) and runs `deploy/aws/deploy.sh`. The job is skipped while `AWS_DEPLOY_ROLE_ARN` is not set.
 
-1. assumes the deploy role through OIDC,
-2. sends an SSM command to the instance that checks out the pushed commit and runs `deploy/aws/deploy.sh`,
-3. waits for the command, prints its output, and fails if the deploy failed.
+## Rolling deploys: the rules they impose
 
-The job is skipped while `AWS_DEPLOY_ROLE_ARN` is not set.
+Old and new versions run side by side for a few minutes, so:
 
-If seeding fails (for example, a broken exercise YAML), `seed` exits with 1. Compose then leaves the API and worker as they were and the job fails.
-
-## Updating
-
-Push to `main`. Or deploy by hand as in step 4, after `git pull`. Database migrations and seeding run on every deploy; both are safe to repeat.
+- a migration must not break the old code (add columns and tables; drop them a release later);
+- the messages and events in `backend/contracts` may gain fields, never lose or rename them: an old run-service must still read a new worker's events.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| `cdk deploy` fails on `GithubOidc` with "already exists" | The account already has GitHub's OIDC provider; pass `-c githubOidcProviderArn=...` (step 1) |
-| `aws ssm start-session` says the target is not connected | The instance is still booting, or the Session Manager plugin is missing on your computer |
-| `Parameter /codecomp/POSTGRES_PASSWORD is missing` | Step 2 was skipped, or the parameters are in a different region |
-| Deploy job: `Could not assume role` | `AWS_DEPLOY_ROLE_ARN` is wrong, or the push was not to `main` of the repository named in `deploy/aws/cdk.json` |
-| Deploy job: `service "seed" didn't complete successfully` | `docker compose logs seed` on the instance: a bad exercise file or no database connection |
-| Deploy job times out on the first run | The first build is slow; re-run the job, Maven's downloads are cached by then |
-
-Everything else (gVisor, Google sign-in, HTTPS) is the same as on OCI: see [DEPLOY_OCI.md, Troubleshooting](DEPLOY_OCI.md#troubleshooting).
+| `cdk deploy` fails on `GithubOidc` with "already exists" | The account already has GitHub's OIDC provider; pass `-c githubOidcProviderArn=...` |
+| `codecomp-db-init failed` / `codecomp-*-seed failed` | CloudWatch logs `/codecomp/db-init`, `/codecomp/exercise-seed`, `/codecomp/repo-seed` |
+| A service's deployment rolls back | `/codecomp/<service>` logs. identity: `JWT_PRIVATE_KEY` not a PKCS#8 PEM (step 2) |
+| Everyone signed out after a deploy | The JWT key changed, or identity started without one and made a temporary key |
+| Alarm on `run-requests-dlq` | Runs that no worker could finish (workers crashing). run-service marks them FAILED |
+| Alarm on `run-events-*-dlq` | Events a service could not process; their logs say why. Redrive them once fixed |
+| Runs stay QUEUED | No worker running: check the worker service and the Auto Scaling group (`runsc` install in the instance's user data log) |
 
 ## Cost
 
-Roughly $30 a month in `us-east-1`, on demand: the instance about $25, the disk about $2.40, the public IPv4 address about $3.60. Other regions differ slightly.
-
-## Backups
-
-The database lives on the instance's disk. `deploy/oci/backup.sh` works here for local dumps (cron line in [DEPLOY_OCI.md, step 6](DEPLOY_OCI.md#6-backups)), but its off-machine upload targets OCI Object Storage. For AWS, take EBS snapshots (Data Lifecycle Manager) or copy the dumps to S3.
+Not measured, since it has not been deployed. The fixed part is roughly $120–150 a month in `us-east-1` on demand: the NAT gateway (~$33 plus traffic), the ALB (~$18), RDS `db.t4g.micro` (~$13), four Fargate tasks at 0.5 vCPU / 1 GB (~$70), one `t3.medium` worker host (~$30), plus small amounts for CloudFront, SQS, SNS, Secrets Manager and CloudWatch. The single-EC2 setup this replaces cost about $30.
 
 ## Removing it
 
@@ -143,4 +143,4 @@ The database lives on the instance's disk. `deploy/oci/backup.sh` works here for
 cd deploy/aws && npx cdk destroy
 ```
 
-This deletes the instance **and its disk, including the database**. Back it up first. The SSM parameters are not part of the stack; delete them with `aws ssm delete-parameter`.
+The database has deletion protection and is snapshotted on removal: turn protection off in the RDS console first. The ECR repositories are retained (with their images); delete them by hand if you want them gone.
