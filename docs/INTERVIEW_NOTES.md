@@ -19,6 +19,21 @@ How to answer in an interview: give the reason first, then the mechanism, then t
 11. [How is malicious code contained in the sandbox?](#11-how-is-malicious-code-contained-in-the-sandbox)
 12. [How answers are graded](#12-how-answers-are-graded)
 13. [Queue and workers: SSE or polling?](#13-queue-and-workers-sse-or-polling)
+14. [What does SandboxWarmer do?](#14-what-does-sandboxwarmer-do)
+15. [Is this a production codebase?](#15-is-this-a-production-codebase)
+16. [Why a Postgres queue and not SQS?](#16-why-a-postgres-queue-and-not-sqs)
+17. [What is a "job", in plain words?](#17-what-is-a-job-in-plain-words)
+18. [The architecture from a user's point of view](#18-the-architecture-from-a-users-point-of-view)
+19. [Is Postgres really the queue? How?](#19-is-postgres-really-the-queue-how)
+20. ["Run hidden tests": the current flow, with the queue](#20-run-hidden-tests-the-current-flow-with-the-queue)
+21. [What does `app.role` mean? (`all`, `api`, `worker`, `seed`)](#21-what-does-approle-mean-all-api-worker-seed)
+22. [When does each role start, and what happens on the first deploy?](#22-when-does-each-role-start-and-what-happens-on-the-first-deploy)
+23. [Why are the API and worker the same code? Could they be separate services?](#23-why-are-the-api-and-worker-the-same-code-could-they-be-separate-services)
+24. [The multi-module split: one jar per process](#24-the-multi-module-split-one-jar-per-process)
+25. [Can each part scale independently on several machines?](#25-can-each-part-scale-independently-on-several-machines)
+26. [What is the current architecture?](#26-what-is-the-current-architecture)
+27. [The microservices version: design and trade-offs](#27-the-microservices-version-design-and-trade-offs)
+28. [How many services are there?](#28-how-many-services-are-there)
 
 ---
 
@@ -913,3 +928,159 @@ per run:  worker ──docker run──► sandbox container (seconds, then dele
 **Still not independent:** they share one database schema, so a change to `run_jobs` still needs both deployed together (section 23).
 
 **Interview answer:** "I split the backend into modules so each process ships only what it runs. The worker, which can start containers, no longer contains the web stack, sign-in or the AI client, and the API image doesn't even have the docker binary. I kept one application class in the shared module; component scanning picks up whatever is on the classpath, so the jar contents decide the role, and an all-in-one module puts everything together for tests and local development."
+
+### How the split works, step by step
+
+1. **Maven builds the modules in dependency order** (the "reactor"): `core` first, then `api`, `seed`, `worker` (its tests use `seed`), then `all-in-one`. The parent `backend/pom.xml` only lists the modules and shared settings; each module's `pom.xml` names its own dependencies.
+2. **Dependencies flow one way.** `api`, `worker` and `seed` each depend on `core` and never on each other. The compiler enforces this: `JobWorker` can't call `RepoService` (api) because that class isn't on the worker's classpath.
+3. **Each app module produces a runnable jar** (`*-exec.jar`) that bundles its own classes, `core`, and only its own libraries. The worker jar has no Tomcat, Spring MVC, Spring Security or Anthropic SDK.
+4. **One entry point, `CodecompApplication`, in `core`.** At startup Spring scans `dev.codecomp` for components, but it can only find classes that are in that jar. API jar → controllers, sign-in, `JobService`. Worker jar → `JobWorker`, `JobQueue`, `DockerSandbox`. Seed jar → the two seeders.
+5. **Configuration is layered the same way.** `core.yml` holds the shared settings (database, sandbox languages); each app's `application.yml` imports it plus its own file (`api.yml`, `worker.yml`) and sets process-level options (worker and seed: no web server; seed: exit when done).
+6. **The modules talk only through Postgres**, using shared types from core: the API inserts a `RunJob`; the worker claims it, writes a `RunResults` record as JSON into the row; the API reads it back and streams it to the browser.
+7. **Docker:** one build stage compiles everything once, then `--target api|worker|seed` copies one jar into a small image. Only the worker image gets the `docker` CLI.
+8. **`all-in-one`** depends on all three, so its classpath has everything and one process runs API + worker + seed: that's what the integration tests and local development use.
+
+---
+
+## 25. Can each part scale independently on several machines?
+
+| Part | Scale out? | Why / what's needed |
+|---|---|---|
+| **worker** | **Yes, already** | Built for it: the conditional `UPDATE … WHERE status='QUEUED'` means many workers never share a job; heartbeats and the recovery sweep work across machines; each worker names itself (`host-uuid`). Each machine needs Docker + gVisor and database access. Capacity = machines × `SANDBOX_MAX_CONCURRENT`. |
+| **api** | **Yes, with 2 fixes** | Job state is in Postgres and each instance polls it for the browsers it serves, so live updates work from any instance. But: (1) **sessions live in memory**, so another instance doesn't know you: use sticky sessions or Spring Session (JDBC/Redis); (2) **the rate limiter is in memory**, so N instances allow N × 20 runs/min: move it to Redis or Postgres. Also needs a load balancer that keeps long-lived SSE connections open. |
+| **seed** | **No: exactly one, once per deploy** | Two seeders at once race (look up slug, then insert). Run it as one step in the pipeline (ECS one-off task, Kubernetes Job), never as a scaled service. |
+| **frontend** | Yes, trivially | Static files: put them on a CDN (S3 + CloudFront). |
+| **Postgres** | Not horizontally | The shared bottleneck: every API instance and every idle worker queries it several times a second. Scale up (bigger machine, managed RDS), add a read replica for the read-heavy pages, then `LISTEN/NOTIFY` instead of polling. |
+| **Caddy** | Replaced | A cloud load balancer (ALB) does HTTPS and spreads requests. |
+
+**Small race to know about:** the per-user cap (2) and queue cap (500) count rows, then insert. Two simultaneous requests can both pass the check, so the caps can be exceeded by a few. It's harmless; a fix is a unique constraint or `SELECT … FOR UPDATE` on a per-user row.
+
+**What scales on what signal (AWS example):**
+- API: ECS Fargate tasks behind an ALB, autoscale on CPU or requests.
+- Workers: an EC2 Auto Scaling group (Fargate can't run Docker), autoscale on **queue depth** (count of `QUEUED` jobs). Needs a metric the app doesn't publish yet (section 15, monitoring).
+- Seed: an ECS one-off task in the deploy pipeline, before the services update.
+- Postgres: RDS.
+
+**Rolling deploys:** old and new versions run side by side for a while, so a migration must not break the old code, and the `RunResults` JSON written by a new worker must still be readable by an old API (add fields, don't rename or remove them).
+
+**Interview answer:** "The workers scale out today: the queue's conditional claim and heartbeats were built for many workers. The API is nearly stateless; I'd move sessions and the rate limiter out of memory before running more than one. The seed job is the opposite: exactly one per deploy. The real limit is the single Postgres, which every process polls, so the next steps there are a bigger managed instance and `LISTEN/NOTIFY`."
+
+---
+
+## 26. What is the current architecture?
+
+**In short:** a React frontend, a Spring Boot **API** and a separate **worker**, with **Postgres** in the middle as the database *and* the job queue. Only the worker can start sandbox containers. A one-off **seed** job loads the content. Everything runs with Docker Compose on one machine. This replaces section 1, which describes the old single-jar monolith. `app.role` (section 21) no longer exists: the jar's contents now decide the role (section 24).
+
+```
+Browser
+  │ HTTPS
+  ▼
+Caddy (prod only)           TLS (automatic HTTPS when given a domain), gzip
+  ▼
+frontend (nginx)            React + TypeScript + Monaco, static files; proxies /api/* to the API
+  ▼
+api  (Spring Boot, Java 21)          no Docker access
+  │  Google sign-in, exercises, grading, Claude features (review grading, Ask AI, inline edits)
+  │  JobService: cache check → per-user cap → queue cap → rate limit → INSERT run_jobs (QUEUED)
+  │  JobEvents: SSE to the browser; one DB query every 250 ms for all watched jobs
+  ▼
+Postgres 16 (Flyway)  ◄── the only link between api and worker
+  │  exercises, attempts, users, repo_exercises, repo_submissions, run_cache, run_jobs
+  ▲
+worker (Spring Boot, no web server)  the only process with the Docker socket
+  │  JobWorker: claim (conditional UPDATE) → cache → sandbox → write result → DONE
+  │  heartbeats every 10 s; requeues jobs whose worker went silent for 60 s (max 3 attempts)
+  ▼
+Docker daemon → one throwaway sandbox container per run (gVisor `runsc` in prod, no network)
+
+seed (one-off)  loads YAML exercises into Postgres, exits; api and worker wait for it to succeed
+```
+
+| Process | Module / image | Job | Scales? |
+|---|---|---|---|
+| frontend | `frontend/` (nginx) | static app + `/api` proxy | yes, trivially |
+| api | `api` | HTTP, auth, grading, AI, enqueue, SSE | yes, after moving sessions and the rate limiter out of memory |
+| worker | `worker` | execute code in sandboxes | yes, today |
+| seed | `seed` | load content once per deploy | exactly one |
+| db | Postgres 16 | data + queue + result cache | scale up only |
+
+**Shared code:** the `core` library (entities, repositories, `RunCache`, `RunResults`, `RepoScoring`, `Grader`, `Points`, migrations). `api`, `worker` and `seed` depend on `core`, never on each other. `all-in-one` puts all three in one process for tests and local development.
+
+**A run, end to end:** the browser POSTs code → the API answers at once from `run_cache` if the same code ran before, otherwise it inserts a `QUEUED` row and returns the job id → the browser opens an SSE stream → a worker claims the row, runs the sandbox, and writes the result JSON into the row and the cache → the API's 250 ms poll sees `DONE` and pushes it → the stream closes.
+
+**Deployment:** `docker-compose.yml` + `docker-compose.prod.yml` on a single machine (AWS EC2 arm64 built by CDK, or OCI). GitHub Actions deploys through SSM `SendCommand` with an OIDC role that only the `main` branch can assume. Images are built on the server from one multi-stage `backend/Dockerfile` (`--target api|worker|seed`).
+
+**Weaknesses to name:** everything is on one machine (one point of failure); Postgres is polled by every process; sessions and the rate limiter are in memory; and the worker's Docker socket is effectively root on the host, which is why gVisor is on in production.
+
+**Interview answer:** "It's a modular monolith split into processes. An API handles the web traffic and never runs code. Code runs are queued in a Postgres table, and separate workers claim them with an atomic conditional update and execute them in throwaway gVisor containers. The worker is the only process with Docker access. Results go back through the same row, and the API streams them to the browser over SSE. I used Postgres as the queue to avoid running another system at this scale; heartbeats and a recovery sweep handle workers that die. It all runs with Compose on one EC2 instance, deployed from GitHub Actions through SSM."
+
+---
+
+## 27. The microservices version: design and trade-offs
+
+*On the `microservices` branch. Section 26 describes `main`. The AWS stack synthesizes but has not been deployed.*
+
+**In short:** five services split by business domain, each owning its own database, talking only over HTTP and messages. Sign-in became a signed token. The Postgres queue became SQS, and results come back as events on an SNS topic.
+
+| Service | Owns | Talks to |
+|---|---|---|
+| identity | `users` | issues the JWT; publishes its public keys (JWKS) |
+| exercise | `exercises`, `attempts` | nobody |
+| repo | `repo_exercises`, `repo_submissions`, `pending_runs` | run-service (HTTP), run events (SQS) |
+| run | `run_jobs`, `run_cache` | run-requests queue (SQS), run events (SNS/SQS) |
+| sandbox-worker | nothing | run-requests queue in, run-events topic out |
+
+Shared code is only libraries without business logic: `contracts` (the messages), `messaging` (SQS/SNS client), `platform` (security plumbing). Nothing on the worker can reach a database.
+
+### The decisions, and what each one costs
+
+| Decision | Why | Cost |
+|---|---|---|
+| **Split by domain, database per service** (one RDS instance, one database and login each) | Each service can change its schema and deploy alone; the database enforces "no reading another service's tables" | No joins across services. Points became two calls the page adds up. One RDS instance is still one failure point (logical, not physical, separation) |
+| **JWT instead of a session** | Any instance of any service checks a token locally with the public key; no shared session store | A token cannot be revoked before it expires (7 days); signing out only deletes the cookie |
+| **SQS instead of the Postgres queue** | The visibility timeout replaces heartbeats and the recovery sweep; the dead-letter queue replaces "failed after 3 tries"; workers need no database at all | Two systems to keep consistent (the job row and the message): solved with a resend sweeper and idempotent consumers, not a transaction |
+| **SNS fan-out for results** | The worker doesn't know who cares: run-service and repo-service each get their own queue | Delivery is at least once and out of order. Every handler must be idempotent |
+| **repo-service records test runs from events** | It owns `repo_submissions`, so only it may write them | The browser sees DONE from run-service before repo-service has recorded the run: it fetches the scored result and retries a 404 briefly. That is eventual consistency, visible in the UI |
+| **Worker on EC2, web services on Fargate** | The worker needs a Docker daemon and gVisor; Fargate offers neither | Two kinds of compute to run; worker hosts scale on queue depth, the others on CPU |
+
+### Things the split forced, worth telling
+
+1. **Idempotency everywhere.** run-service's updates only move a job forward (`... where status in ('QUEUED','RUNNING')`), so a duplicate or late event matches no row. repo-service records only jobs listed in `pending_runs` and deletes the entry in the same transaction as it records the run; `job_id` is unique on submissions as a second guard.
+2. **The id comes from the caller.** repo-service picks the job id and saves `pending_runs` before calling run-service. Otherwise a fast cache-hit event could arrive before repo-service knew the id, and be thrown away.
+3. **Hidden data dependencies surface.** Points need each exercise's "baseline" (tests that already pass on the untouched code). Before, the API read it from the shared run cache. After the split the cache is run-service's, so repo-service measures it itself: it submits the untouched code as a system run and stores the result on the exercise.
+4. **Security in the gaps.** A user could call run-service directly with code that prints `PASS` lines; that does not earn points, because only jobs repo-service submitted count. `/internal/runs` has no route on the load balancer, and security groups let only repo-service reach run-service.
+5. **A CSRF bug the tests caught.** Spring skips the CSRF check for requests that carry a bearer token. My first version read the token from the cookie as a "bearer token", so every cookie-authenticated POST skipped CSRF. Fix: only the `Authorization` header counts as a bearer token (another site can't make a browser send it); the cookie goes through its own filter, so CSRF still applies. A test asserts a POST with the cookie but no CSRF token gets 403.
+6. **Content checks moved to CI.** The worker used to check every exercise at startup and only log a warning. It can't read exercises anymore, so `content-tests` runs them in the real sandbox in CI, and a wrong answer now fails the build instead of logging.
+7. **A shutdown bug only a failure drill showed.** I stopped a worker, submitted a run, and it took 125 s to finish instead of 2. The worker had exited in the middle of a 20-second long poll; the queue handed the new message to that dead poll, and the message stayed hidden for the full 2-minute visibility timeout. Every deploy or scale-in would have delayed runs like that. Fix: on shutdown the worker waits for its current receive to return, hands anything it got straight back (visibility 0), then waits for runs in progress; the container's stop timeout is 60 s to allow for it. Unit tests with fakes could not have found this; the drill against LocalStack did.
+
+### What got worse (say it before they ask)
+
+- **More moving parts:** 5 services, 6 queues, a topic, a load balancer, a CDN, against one EC2 box. Estimated fixed cost about $120–150 a month against about $30.
+- **Latency:** a run now goes browser → run → SQS → worker → SNS → SQS → run → browser, instead of through one database. Not measured yet.
+- **Local development** needs LocalStack and five containers; tests run each service alone with fakes, so a cross-service bug shows up only in the Compose stack.
+- **For this size, it is the wrong architecture.** One team and about 4,000 lines of Java don't need independent deploys. I built it to learn the patterns, and I would say so.
+
+**Interview answer:** "I split it by business domain: identity, exercises, repo reviews, runs, and a sandbox worker, each with its own database. Sign-in became a JWT that every service checks locally against identity's public key. Code runs go through SQS: the visibility timeout and a dead-letter queue replaced the heartbeat logic I had written by hand. Results fan out on SNS to the services that care. The hard part was consistency without shared transactions. Every consumer is idempotent, the caller picks the job id so no event can arrive before it is expected, and the UI tolerates a short delay between 'run finished' and 'run scored'. Honestly, at this size a modular monolith is the better choice; I did it to learn, and I can tell you exactly what it cost."
+
+---
+
+## 28. How many services are there?
+
+**Five backend services**, each its own jar, container and database:
+
+| Service | Module | Owns |
+|---|---|---|
+| identity | `identity-service` | Google sign-in, users, issuing the JWT |
+| exercise | `exercise-service` | Snippet exercises, attempts, grading and points |
+| repo | `repo-service` | Repo exercises, submissions, Claude review grading, baselines |
+| run | `run-service` | Run jobs and their status; puts runs on SQS |
+| sandbox worker | `sandbox-worker` | Takes runs off SQS, runs code in gVisor, publishes results on SNS |
+
+What is **not** a service, but easy to miscount:
+
+- **Shared libraries** (no process of their own): `contracts` (message and DTO types), `messaging` (SQS/SNS helpers), `platform` (JWT check, current user, rate limiter, error handling).
+- **`content-tests`**: runs every exercise's answer in the real sandbox in CI. Test-only.
+- **One-off jobs**: `exercise-seed` and `repo-seed` in `docker-compose.yml` load content and exit; they are the exercise and repo jars started in seed mode.
+- **Frontend** and **infrastructure** (Postgres, LocalStack standing in for SQS/SNS).
+
+**Interview answer:** "Five services split by domain: identity, exercises, repo reviews, runs, and the sandbox worker. Three shared libraries hold the message contracts, the queue code and the auth check, so they aren't services. Content seeding runs as one-off jobs from the same jars."
